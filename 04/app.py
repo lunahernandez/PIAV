@@ -1,0 +1,319 @@
+import io
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.io import wavfile
+from scipy.signal import (
+    butter, cheby1, cheby2, filtfilt, lfilter, firwin
+)
+from scipy.fft import rfft, rfftfreq
+import streamlit as st
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
+import av
+import queue
+import threading
+
+st.set_page_config(page_title="Filtrado de Audio", layout="wide")
+st.title("Aplicación de Filtrado de Señales de Audio – Ruidosa vs Filtrada")
+
+def to_mono(x: np.ndarray) -> np.ndarray:
+    if x.ndim == 1:
+        return x.astype(np.float64)
+    return x.mean(axis=1).astype(np.float64)
+
+def normalize(x: np.ndarray) -> np.ndarray:
+    mx = np.max(np.abs(x)) if np.max(np.abs(x)) != 0 else 1.0
+    return (x / mx).astype(np.float64)
+
+def add_white_noise(x: np.ndarray, snr_db: float) -> np.ndarray:
+    if np.all(x == 0):
+        return x.copy()
+    x = x.astype(np.float64)
+    p_signal = np.mean(x**2)
+    p_noise = p_signal / (10**(snr_db/10))
+    noise = np.random.normal(0, np.sqrt(p_noise), size=x.shape)
+    return normalize(x + noise)
+
+def make_note(fs: int, f0: float, dur: float, harmonics: int) -> np.ndarray:
+    t = np.linspace(0, dur, int(fs*dur), endpoint=False)
+    x = np.sin(2*np.pi*f0*t)
+    for k in range(2, harmonics+1):
+        x += (1.0/k) * np.sin(2*np.pi*f0*k*t)
+    return normalize(x)
+
+def safe_cutoffs(c1, c2, fs):
+    nyq = fs * 0.5
+    c1 = max(10.0, min(c1, nyq*0.999))
+    c2 = c1 if c2 is None else max(10.0, min(c2, nyq*0.999))
+    if c2 < c1:
+        c1, c2 = c2, c1
+    return c1, c2
+
+def design_filter(filter_kind, impl, fs, cutoff1, cutoff2=None, order=5, rp=1, rs=40, fir_taps=401, window="hamming"):
+    nyq = fs*0.5
+    w1 = cutoff1/nyq
+    w2 = None if cutoff2 is None else cutoff2/nyq
+
+    if impl == "FIR (ventana)":
+        btype = {
+            "Pasa-Bajo": "lowpass",
+            "Pasa-Alto": "highpass",
+            "Pasa-Banda": "bandpass",
+            "Rechaza-Banda": "bandstop",
+        }[filter_kind]
+        if btype in ("lowpass", "highpass"):
+            taps = firwin(fir_taps, w1, pass_zero=(btype=="lowpass"), window=window)
+        else:
+            taps = firwin(fir_taps, [w1, w2], pass_zero=(btype=="bandstop"), window=window)
+        return taps, np.array([1.0]), "FIR"
+
+    if impl in ("Butterworth (filtfilt)", "Butterworth (lfilter)"):
+        if filter_kind == "Pasa-Bajo":
+            b, a = butter(order, w1, btype="low")
+        elif filter_kind == "Pasa-Alto":
+            b, a = butter(order, w1, btype="high")
+        elif filter_kind == "Pasa-Banda":
+            b, a = butter(order, [w1, w2], btype="band")
+        else:
+            b, a = butter(order, [w1, w2], btype="bandstop")
+        return b, a, impl
+
+    if impl == "Chebyshev I (filtfilt)":
+        if filter_kind == "Pasa-Bajo":
+            b, a = cheby1(order, rp, w1, btype="low")
+        elif filter_kind == "Pasa-Alto":
+            b, a = cheby1(order, rp, w1, btype="high")
+        elif filter_kind == "Pasa-Banda":
+            b, a = cheby1(order, rp, [w1, w2], btype="band")
+        else:
+            b, a = cheby1(order, rp, [w1, w2], btype="bandstop")
+        return b, a, impl
+
+    if impl == "Chebyshev II (filtfilt)":
+        if filter_kind == "Pasa-Bajo":
+            b, a = cheby2(order, rs, w1, btype="low")
+        elif filter_kind == "Pasa-Alto":
+            b, a = cheby2(order, rs, w1, btype="high")
+        elif filter_kind == "Pasa-Banda":
+            b, a = cheby2(order, rs, [w1, w2], btype="band")
+        else:
+            b, a = cheby2(order, rs, [w1, w2], btype="bandstop")
+        return b, a, impl
+
+    raise ValueError("Implementación de filtro no soportada")
+
+def apply_filter(noisy, fs, filter_kind, impl, cutoff1, cutoff2, order, rp, rs, fir_taps, window):
+    c1, c2 = safe_cutoffs(cutoff1, cutoff2, fs)
+    b, a, tag = design_filter(filter_kind, impl, fs, c1, c2, order, rp, rs, fir_taps, window)
+    if tag == "FIR":
+        y = lfilter(b, a, noisy).astype(np.float64)
+    elif impl.endswith("(lfilter)"):
+        y = lfilter(b, a, noisy).astype(np.float64)
+    else:
+        y = filtfilt(b, a, noisy).astype(np.float64)
+    return normalize(y)
+
+def compute_fft(x, fs):
+    n = len(x)
+    X = rfft(x)
+    f = rfftfreq(n, 1/fs)
+    return f, np.abs(X)
+
+def plot_signals_2(original_noisy, filtered, fs):
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+
+    t = np.arange(len(original_noisy)) / fs
+    axes[0,0].plot(t, original_noisy, linewidth=0.6)
+    axes[0,0].set_title("Original (ruidosa) – Dominio temporal")
+    axes[0,0].set_xlabel("Tiempo (s)"); axes[0,0].set_ylabel("Amplitud"); axes[0,0].grid(alpha=0.3)
+
+    axes[0,1].plot(t, filtered, linewidth=0.6)
+    axes[0,1].set_title("Filtrada – Dominio temporal")
+    axes[0,1].set_xlabel("Tiempo (s)"); axes[0,1].set_ylabel("Amplitud"); axes[0,1].grid(alpha=0.3)
+
+    f1, X1 = compute_fft(original_noisy, fs)
+    f2, X2 = compute_fft(filtered, fs)
+
+    axes[1,0].plot(f1, X1, linewidth=0.6)
+    axes[1,0].set_title("Original (ruidosa) – Dominio frecuencia")
+    axes[1,0].set_xlabel("Frecuencia (Hz)"); axes[1,0].set_ylabel("Magnitud")
+    axes[1,0].set_xlim(0, fs/2); axes[1,0].grid(alpha=0.3)
+
+    axes[1,1].plot(f2, X2, linewidth=0.6)
+    axes[1,1].set_title("Filtrada – Dominio frecuencia")
+    axes[1,1].set_xlabel("Frecuencia (Hz)"); axes[1,1].set_ylabel("Magnitud")
+    axes[1,1].set_xlim(0, fs/2); axes[1,1].grid(alpha=0.3)
+
+    plt.tight_layout()
+    return fig
+
+st.sidebar.header("Fuente de audio")
+src = st.sidebar.selectbox("Origen", ["Nota sintética", "Cargar WAV", "Micrófono (en vivo)"])
+
+if src != "Micrófono (en vivo)":
+    fs = st.sidebar.number_input("Fs (Hz)", 8000, 48000, value=44100, step=1000)
+else:
+    fs = 48000
+
+if src == "Nota sintética":
+    f0 = st.sidebar.slider("Frecuencia de la nota (Hz)", 100, 2000, 440, 1)
+    dur = st.sidebar.slider("Duración (s)", 0.5, 10.0, 2.0, 0.1)
+    harms = st.sidebar.slider("Armónicos", 0, 10, 3, 1)
+    add_noise_flag = st.sidebar.checkbox("Añadir ruido y usarla como 'Original'", value=True)
+    if add_noise_flag:
+        snr_db = st.sidebar.slider("SNR (dB) del ruido", -10, 40, 10, 1)
+    else:
+        snr_db = None
+
+elif src == "Cargar WAV":
+    uploaded_file = st.sidebar.file_uploader("Archivo .wav", type=["wav"])
+    add_noise_flag = st.sidebar.checkbox("Añadir ruido adicional al WAV", value=False)
+    if add_noise_flag:
+        snr_db = st.sidebar.slider("SNR (dB) del ruido adicional", -10, 40, 10, 1)
+    else:
+        snr_db = None
+
+else:
+    add_noise_flag = st.sidebar.checkbox("Añadir ruido adicional al mic", value=False)
+    if add_noise_flag:
+        snr_db = st.sidebar.slider("SNR (dB) del ruido adicional", -10, 40, 20, 1)
+    else:
+        snr_db = None
+
+st.sidebar.header("Filtro")
+filter_kind = st.sidebar.selectbox("Tipo de Filtro",
+    ["Pasa-Bajo", "Pasa-Alto", "Pasa-Banda", "Rechaza-Banda"])
+
+impl = st.sidebar.selectbox("Implementación",
+    ["Butterworth (lfilter)", "Butterworth (filtfilt)", "Chebyshev I (filtfilt)", "Chebyshev II (filtfilt)", "FIR (ventana)"])
+
+cutoff1 = st.sidebar.slider("Frecuencia de Corte 1 (Hz)", 20, int(fs/2)-20, 1000, 10)
+cutoff2 = None
+if filter_kind in ("Pasa-Banda", "Rechaza-Banda"):
+    cutoff2 = st.sidebar.slider("Frecuencia de Corte 2 (Hz)", 20, int(fs/2)-20, 3000, 10)
+
+colp1, colp2, colp3 = st.sidebar.columns(3)
+order = colp1.slider("Orden", 1, 10, 5, 1)
+rp = colp2.slider("rp (dB) Cheby I", 0.1, 5.0, 1.0, 0.1)
+rs = colp3.slider("rs (dB) Cheby II", 20, 80, 40, 5)
+
+fir_taps = st.sidebar.slider("Taps FIR", 51, 2001, 401, 10)
+window = st.sidebar.selectbox("Ventana FIR", ["hamming", "hann", "blackman", "bartlett"])
+
+def process_make_noisy_original(input_signal, fs, add_noise_flag, snr_db):
+    if add_noise_flag and snr_db is not None:
+        original_noisy = add_white_noise(input_signal, snr_db)
+    else:
+        original_noisy = input_signal
+    filtered = apply_filter(original_noisy, fs, filter_kind, impl, cutoff1, cutoff2, order, rp, rs, fir_taps, window)
+    return original_noisy, filtered
+
+if src != "Micrófono (en vivo)":
+    if src == "Nota sintética":
+        clean = make_note(fs, f0, dur, harms)
+        original, filtered = process_make_noisy_original(clean, fs, add_noise_flag, snr_db)
+    else:
+        if uploaded_file is None:
+            st.info("Carga un archivo WAV para comenzar.")
+            st.stop()
+        fs_file, data = wavfile.read(uploaded_file)
+        if data.ndim > 1:
+            data = data[:, 0]
+        data = normalize(data.astype(np.float64))
+        fs = fs_file
+        original, filtered = process_make_noisy_original(data, fs, add_noise_flag, snr_db)
+
+    st.subheader("Visualización de señales")
+    fig = plot_signals_2(original, filtered, fs)
+    st.pyplot(fig, clear_figure=True)
+
+    st.subheader("Reproducción de Audio")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.write("Original (ruidosa)")
+        b1 = io.BytesIO()
+        wavfile.write(b1, fs, (original*32767).astype(np.int16))
+        st.audio(b1.getvalue(), format="audio/wav")
+    with c2:
+        st.write("Filtrada")
+        b2 = io.BytesIO()
+        wavfile.write(b2, fs, (filtered*32767).astype(np.int16))
+        st.audio(b2.getvalue(), format="audio/wav")
+
+    st.download_button("Descargar audio filtrado", b2.getvalue(),
+                       file_name="audio_filtrado.wav", mime="audio/wav")
+
+else:
+    st.subheader("Micrófono en vivo")
+    
+    class MicAudioProcessor(AudioProcessorBase):
+        def __init__(self):
+            self.filter_params = {
+                'fs': fs,
+                'filter_kind': filter_kind,
+                'impl': impl,
+                'cutoff1': cutoff1,
+                'cutoff2': cutoff2,
+                'order': order,
+                'rp': rp,
+                'rs': rs,
+                'fir_taps': fir_taps,
+                'window': window,
+                'add_noise': add_noise_flag,
+                'snr_db': snr_db
+            }
+            self.lock = threading.Lock()
+
+        def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
+            sound = frame.to_ndarray()
+            
+            with self.lock:
+                if sound.ndim > 1:
+                    sound = sound.mean(axis=1)
+                
+                sound = normalize(sound.astype(np.float64))
+                
+                if self.filter_params['add_noise'] and self.filter_params['snr_db'] is not None:
+                    sound = add_white_noise(sound, self.filter_params['snr_db'])
+                
+                try:
+                    filtered = apply_filter(
+                        sound,
+                        self.filter_params['fs'],
+                        self.filter_params['filter_kind'],
+                        self.filter_params['impl'],
+                        self.filter_params['cutoff1'],
+                        self.filter_params['cutoff2'],
+                        self.filter_params['order'],
+                        self.filter_params['rp'],
+                        self.filter_params['rs'],
+                        self.filter_params['fir_taps'],
+                        self.filter_params['window']
+                    )
+                except Exception as e:
+                    st.error(f"Error en filtrado: {e}")
+                    filtered = sound
+                
+                filtered = np.clip(filtered * 0.95, -1.0, 1.0)
+                
+                new_frame = av.AudioFrame.from_ndarray(
+                    filtered.reshape(1, -1).astype(np.float32),
+                    format='flt',
+                    layout='mono'
+                )
+                new_frame.sample_rate = frame.sample_rate
+                
+                return new_frame
+
+    webrtc_ctx = webrtc_streamer(
+        key="mic-filter",
+        mode=WebRtcMode.SENDRECV,
+        audio_processor_factory=MicAudioProcessor,
+        media_stream_constraints={"audio": True, "video": False},
+        async_processing=True,
+        rtc_configuration={
+            "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+        }
+    )
+
+    st.info("Activa el micrófono y habla. Escucharás el audio filtrado en tiempo real.")
+    st.warning("Nota: Usa auriculares para evitar retroalimentación acústica.")
