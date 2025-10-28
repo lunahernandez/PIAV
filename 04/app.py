@@ -112,39 +112,53 @@ def apply_filter(noisy, fs, filter_kind, impl, cutoff1, cutoff2, order, rp, rs, 
         y = filtfilt(b, a, noisy).astype(np.float64)
     return normalize(y)
 
-def compute_fft(x, fs):
+def compute_fft_pos(x, fs):
     n = len(x)
-    X = rfft(x)
-    f = rfftfreq(n, 1/fs)
-    return f, np.abs(X)
+    X = np.fft.fft(x)
+    f = np.fft.fftfreq(n, d=1.0/fs)
+    sel = f >= 0
+    return f[sel], np.abs(X[sel])
 
-def plot_signals_2(original_noisy, filtered, fs):
-    fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+def plot_signals_like_example(original_noisy, filtered, fs):
+    fig, axes = plt.subplots(4, 1, figsize=(15, 12))
 
     t = np.arange(len(original_noisy)) / fs
-    axes[0,0].plot(t, original_noisy, linewidth=0.6)
-    axes[0,0].set_title("Original (ruidosa) – Dominio temporal")
-    axes[0,0].set_xlabel("Tiempo (s)"); axes[0,0].set_ylabel("Amplitud"); axes[0,0].grid(alpha=0.3)
 
-    axes[0,1].plot(t, filtered, linewidth=0.6)
-    axes[0,1].set_title("Filtrada – Dominio temporal")
-    axes[0,1].set_xlabel("Tiempo (s)"); axes[0,1].set_ylabel("Amplitud"); axes[0,1].grid(alpha=0.3)
+    # 1) Señal original (ruidosa) - dominio temporal
+    axes[0].plot(t, original_noisy, linewidth=0.5)
+    axes[0].set_title('Señal Original (Ruidosa) - Dominio Temporal', fontsize=12, fontweight='bold')
+    axes[0].set_xlabel('Tiempo (s)')
+    axes[0].set_ylabel('Amplitud')
+    axes[0].grid(True, alpha=0.3)
 
-    f1, X1 = compute_fft(original_noisy, fs)
-    f2, X2 = compute_fft(filtered, fs)
+    # 2) Señal filtrada - dominio temporal
+    axes[1].plot(t, filtered, linewidth=0.5, color='orange')
+    axes[1].set_title('Señal Filtrada - Dominio Temporal', fontsize=12, fontweight='bold')
+    axes[1].set_xlabel('Tiempo (s)')
+    axes[1].set_ylabel('Amplitud')
+    axes[1].grid(True, alpha=0.3)
 
-    axes[1,0].plot(f1, X1, linewidth=0.6)
-    axes[1,0].set_title("Original (ruidosa) – Dominio frecuencia")
-    axes[1,0].set_xlabel("Frecuencia (Hz)"); axes[1,0].set_ylabel("Magnitud")
-    axes[1,0].set_xlim(0, fs/2); axes[1,0].grid(alpha=0.3)
+    # 3) Espectro original (ruidosa)
+    f1, X1 = compute_fft_pos(original_noisy, fs)
+    axes[2].plot(f1, X1, linewidth=0.5)
+    axes[2].set_title('Señal Original (Ruidosa) - Dominio Frecuencia', fontsize=12, fontweight='bold')
+    axes[2].set_xlabel('Frecuencia (Hz)')
+    axes[2].set_ylabel('Magnitud')
+    axes[2].set_xlim([0, fs/2])
+    axes[2].grid(True, alpha=0.3)
 
-    axes[1,1].plot(f2, X2, linewidth=0.6)
-    axes[1,1].set_title("Filtrada – Dominio frecuencia")
-    axes[1,1].set_xlabel("Frecuencia (Hz)"); axes[1,1].set_ylabel("Magnitud")
-    axes[1,1].set_xlim(0, fs/2); axes[1,1].grid(alpha=0.3)
+    # 4) Espectro filtrada
+    f2, X2 = compute_fft_pos(filtered, fs)
+    axes[3].plot(f2, X2, linewidth=0.5, color='orange')
+    axes[3].set_title('Señal Filtrada - Dominio Frecuencia', fontsize=12, fontweight='bold')
+    axes[3].set_xlabel('Frecuencia (Hz)')
+    axes[3].set_ylabel('Magnitud')
+    axes[3].set_xlim([0, fs/2])
+    axes[3].grid(True, alpha=0.3)
 
     plt.tight_layout()
     return fig
+
 
 st.sidebar.header("Fuente de audio")
 src = st.sidebar.selectbox("Origen", ["Nota sintética", "Cargar WAV", "Micrófono (en vivo)"])
@@ -223,8 +237,9 @@ if src != "Micrófono (en vivo)":
         original, filtered = process_make_noisy_original(data, fs, add_noise_flag, snr_db)
 
     st.subheader("Visualización de señales")
-    fig = plot_signals_2(original, filtered, fs)
+    fig = plot_signals_like_example(original, filtered, fs)
     st.pyplot(fig, clear_figure=True)
+
 
     st.subheader("Reproducción de Audio")
     c1, c2 = st.columns(2)
