@@ -11,6 +11,7 @@ from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
 import av
 import queue
 import threading
+import soundfile as sf
 
 st.set_page_config(page_title="Filtrado de Audio", layout="wide")
 st.title("Aplicación de Filtrado de Señales de Audio – Ruidosa vs Filtrada")
@@ -259,76 +260,81 @@ if src != "Micrófono (en vivo)":
 
 else:
     st.subheader("Micrófono en vivo")
-    
-    class MicAudioProcessor(AudioProcessorBase):
-        def __init__(self):
-            self.filter_params = {
-                'fs': fs,
-                'filter_kind': filter_kind,
-                'impl': impl,
-                'cutoff1': cutoff1,
-                'cutoff2': cutoff2,
-                'order': order,
-                'rp': rp,
-                'rs': rs,
-                'fir_taps': fir_taps,
-                'window': window,
-                'add_noise': add_noise_flag,
-                'snr_db': snr_db
-            }
-            self.lock = threading.Lock()
 
-        def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
-            sound = frame.to_ndarray()
-            
-            with self.lock:
-                if sound.ndim > 1:
-                    sound = sound.mean(axis=1)
-                
-                sound = normalize(sound.astype(np.float64))
-                
-                if self.filter_params['add_noise'] and self.filter_params['snr_db'] is not None:
-                    sound = add_white_noise(sound, self.filter_params['snr_db'])
-                
-                try:
-                    filtered = apply_filter(
-                        sound,
-                        self.filter_params['fs'],
-                        self.filter_params['filter_kind'],
-                        self.filter_params['impl'],
-                        self.filter_params['cutoff1'],
-                        self.filter_params['cutoff2'],
-                        self.filter_params['order'],
-                        self.filter_params['rp'],
-                        self.filter_params['rs'],
-                        self.filter_params['fir_taps'],
-                        self.filter_params['window']
-                    )
-                except Exception as e:
-                    st.error(f"Error en filtrado: {e}")
-                    filtered = sound
-                
-                filtered = np.clip(filtered * 0.95, -1.0, 1.0)
-                
-                new_frame = av.AudioFrame.from_ndarray(
-                    filtered.reshape(1, -1).astype(np.float32),
-                    format='flt',
-                    layout='mono'
-                )
-                new_frame.sample_rate = frame.sample_rate
-                
-                return new_frame
+    from st_audiorec import st_audiorec
+    import soundfile as sf
+    from scipy.io import wavfile
 
-    webrtc_ctx = webrtc_streamer(
-        key="mic-filter",
-        mode=WebRtcMode.SENDRECV,
-        audio_processor_factory=MicAudioProcessor,
-        media_stream_constraints={"audio": True, "video": False},
-        async_processing=True,
-        rtc_configuration={
-            "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-        }
-    )
+    st.info("🎤 Presiona el botón para empezar/detener la grabación")
 
-    st.info("Activa el micrófono y habla. Escucharás el audio filtrado en tiempo real.")
-    st.warning("Nota: Usa auriculares para evitar retroalimentación acústica.")
+    # === Grabar audio ===
+    wav_audio_data = st_audiorec()
+
+    if wav_audio_data is not None:
+        st.success("✅ Audio grabado!")
+
+        # ✅ Leer WAV y obtener la frecuencia real del micrófono
+        audio_array, fs_real = sf.read(io.BytesIO(wav_audio_data), dtype='int16')
+        if audio_array.ndim > 1:
+            audio_array = audio_array.mean(axis=1).astype(np.int16)  # convertir a mono si es estéreo
+
+        # Normalizar
+        audio_original = audio_array.astype(np.float64) / 32768.0
+
+        # === Añadir ruido (si está activado) ===
+        if add_noise_flag and snr_db is not None:
+            audio_noisy = add_white_noise(audio_original, snr_db)
+        else:
+            audio_noisy = audio_original
+
+        # === Aplicar filtro ===
+        try:
+            audio_filtered = apply_filter(
+                audio_noisy,
+                fs_real,
+                filter_kind,
+                impl,
+                cutoff1,
+                cutoff2,
+                order,
+                rp,
+                rs,
+                fir_taps,
+                window
+            )
+        except Exception as e:
+            st.error(f"Error al aplicar el filtro: {e}")
+            audio_filtered = audio_noisy
+
+        # === Generar WAVs válidos para reproducir ===
+        buffer_original = io.BytesIO()
+        buffer_filtered = io.BytesIO()
+        wavfile.write(buffer_original, fs_real, (audio_original * 32767).astype(np.int16))
+        wavfile.write(buffer_filtered, fs_real, (audio_filtered * 32767).astype(np.int16))
+
+        # === Mostrar visualizaciones ===
+        st.subheader("📊 Visualización de las señales")
+        fig = plot_signals_like_example(audio_noisy, audio_filtered, fs_real)
+        st.pyplot(fig, clear_figure=True)
+
+        # === Reproductores de audio ===
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("🎵 Original")
+            st.audio(buffer_original.getvalue(), format="audio/wav")
+
+        with col2:
+            st.subheader("🔊 Con ruido y filtro")
+            st.audio(buffer_filtered.getvalue(), format="audio/wav")
+
+        # Mostrar info técnica
+        dur = len(audio_filtered) / fs_real
+        st.caption(f"Frecuencia real detectada: {fs_real} Hz | Duración: {dur:.2f} s")
+
+        # === Botón de descarga ===
+        st.download_button(
+            label="⬇️ Descargar audio filtrado",
+            data=buffer_filtered.getvalue(),
+            file_name="audio_filtrado.wav",
+            mime="audio/wav"
+        )
