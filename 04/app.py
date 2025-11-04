@@ -5,12 +5,7 @@ from scipy.io import wavfile
 from scipy.signal import (
     butter, cheby1, cheby2, filtfilt, lfilter, firwin
 )
-from scipy.fft import rfft, rfftfreq
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
-import av
-import queue
-import threading
 import soundfile as sf
 
 st.set_page_config(page_title="Filtrado de Audio", layout="wide")
