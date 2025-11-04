@@ -12,30 +12,31 @@ st.set_page_config(page_title="Filtrado de Audio", layout="wide")
 st.title("Aplicación de Filtrado de Señales de Audio – Ruidosa vs Filtrada")
 
 # Convierte una señal estéreo a mono promediando sus canales
-def to_mono(x: np.ndarray) -> np.ndarray:
+def to_mono(x):
     if x.ndim == 1:
         return x.astype(np.float64)
     return x.mean(axis=1).astype(np.float64)
 
-def normalize(x: np.ndarray) -> np.ndarray:
+def normalize(x):
     mx = np.max(np.abs(x)) if np.max(np.abs(x)) != 0 else 1.0
-    return (x / mx).astype(np.float64) # Evita saturación en el audio
+    return (x / mx).astype(np.float64)  # evita saturación en el audio
 
-def add_white_noise(x: np.ndarray, snr_db: float) -> np.ndarray:
+def add_white_noise(x, signal_to_noise_ratio_db):
     if np.all(x == 0):
         return x.copy()
     x = x.astype(np.float64)
-    p_signal = np.mean(x**2) # Potencia de la señal
-    p_noise = p_signal / (10**(snr_db/10) ) # Potencia del ruido
-    noise = np.random.normal(0, np.sqrt(p_noise), size=x.shape)
+    signal_power = np.mean(x**2)
+    noise_power = signal_power / (10**(signal_to_noise_ratio_db/10) )
+    noise = np.random.normal(0, np.sqrt(noise_power), size=x.shape)
     return normalize(x + noise)
 
-def make_note(fs: int, f0: float, dur: float, harmonics: int) -> np.ndarray:
-    t = np.linspace(0, dur, int(fs*dur), endpoint=False)
-    x = np.sin(2*np.pi*f0*t)
-    for k in range(2, harmonics+1):
-        x += (1.0/k) * np.sin(2*np.pi*f0*k*t)
+def make_note(fs, f0, dur, harmonics):
+    t = np.linspace(0, dur, int(fs * dur), endpoint=False)
+    x = np.sin(2 * np.pi * f0 * t)
+    for k in range(2, harmonics + 1):
+        x += (1.0 / k) * np.sin(2 * np.pi * f0 * k * t)
     return normalize(x)
+
 
 # Asegura que las frecuencias de corte estén dentro de límites seguros
 def safe_cutoffs(c1, c2, fs):
@@ -47,7 +48,7 @@ def safe_cutoffs(c1, c2, fs):
     return c1, c2
 
 # Crea los coeficientes del filtro según elección del usuario
-def design_filter(filter_kind, impl, fs, cutoff1, cutoff2=None, order=5, rp=1, rs=40, fir_taps=401, window="hamming"):
+def design_filter(filter_type, impl, fs, cutoff1, cutoff2=None, order=5, rp=1, rs=40, fir_taps=401, window="hamming"):
     nyq = fs*0.5
     w1 = cutoff1/nyq
     w2 = None if cutoff2 is None else cutoff2/nyq
@@ -58,7 +59,7 @@ def design_filter(filter_kind, impl, fs, cutoff1, cutoff2=None, order=5, rp=1, r
             "Pasa-Alto": "highpass",
             "Pasa-Banda": "bandpass",
             "Rechaza-Banda": "bandstop",
-        }[filter_kind]
+        }[filter_type]
         # firwin genera los coeficientes del filtro FIR
         if btype in ("lowpass", "highpass"):
             taps = firwin(fir_taps, w1, pass_zero=(btype=="lowpass"), window=window)
@@ -67,33 +68,33 @@ def design_filter(filter_kind, impl, fs, cutoff1, cutoff2=None, order=5, rp=1, r
         return taps, np.array([1.0]), "FIR"
     # filtros IRR tipo Butterworth
     if impl in ("Butterworth (filtfilt)", "Butterworth (lfilter)"):
-        if filter_kind == "Pasa-Bajo":
+        if filter_type == "Pasa-Bajo":
             b, a = butter(order, w1, btype="low")
-        elif filter_kind == "Pasa-Alto":
+        elif filter_type == "Pasa-Alto":
             b, a = butter(order, w1, btype="high")
-        elif filter_kind == "Pasa-Banda":
+        elif filter_type == "Pasa-Banda":
             b, a = butter(order, [w1, w2], btype="band")
         else:
             b, a = butter(order, [w1, w2], btype="bandstop")
         return b, a, impl
     # filtros IRR tipo Chebyshev
     if impl == "Chebyshev I (filtfilt)":
-        if filter_kind == "Pasa-Bajo":
+        if filter_type == "Pasa-Bajo":
             b, a = cheby1(order, rp, w1, btype="low")
-        elif filter_kind == "Pasa-Alto":
+        elif filter_type == "Pasa-Alto":
             b, a = cheby1(order, rp, w1, btype="high")
-        elif filter_kind == "Pasa-Banda":
+        elif filter_type == "Pasa-Banda":
             b, a = cheby1(order, rp, [w1, w2], btype="band")
         else:
             b, a = cheby1(order, rp, [w1, w2], btype="bandstop")
         return b, a, impl
     # filtros IRR tipo Chebyshev II
     if impl == "Chebyshev II (filtfilt)":
-        if filter_kind == "Pasa-Bajo":
+        if filter_type == "Pasa-Bajo":
             b, a = cheby2(order, rs, w1, btype="low")
-        elif filter_kind == "Pasa-Alto":
+        elif filter_type == "Pasa-Alto":
             b, a = cheby2(order, rs, w1, btype="high")
-        elif filter_kind == "Pasa-Banda":
+        elif filter_type == "Pasa-Banda":
             b, a = cheby2(order, rs, [w1, w2], btype="band")
         else:
             b, a = cheby2(order, rs, [w1, w2], btype="bandstop")
@@ -102,9 +103,9 @@ def design_filter(filter_kind, impl, fs, cutoff1, cutoff2=None, order=5, rp=1, r
     raise ValueError("Implementación de filtro no soportada")
 
 # Aplica el filtro diseñado a la señal ruidosa
-def apply_filter(noisy, fs, filter_kind, impl, cutoff1, cutoff2, order, rp, rs, fir_taps, window):
+def apply_filter(noisy, fs, filter_type, impl, cutoff1, cutoff2, order, rp, rs, fir_taps, window):
     c1, c2 = safe_cutoffs(cutoff1, cutoff2, fs)
-    b, a, tag = design_filter(filter_kind, impl, fs, c1, c2, order, rp, rs, fir_taps, window)
+    b, a, tag = design_filter(filter_type, impl, fs, c1, c2, order, rp, rs, fir_taps, window)
     # Distintas funciones de filtrado
     if tag == "FIR":
         y = lfilter(b, a, noisy).astype(np.float64) # FIR es solo con coef b
@@ -198,7 +199,7 @@ else:
         snr_db = None
 
 st.sidebar.header("Filtro")
-filter_kind = st.sidebar.selectbox("Tipo de Filtro",
+filter_type = st.sidebar.selectbox("Tipo de Filtro",
     ["Pasa-Bajo", "Pasa-Alto", "Pasa-Banda", "Rechaza-Banda"])
 
 impl = st.sidebar.selectbox("Implementación",
@@ -213,7 +214,7 @@ impl = st.sidebar.selectbox("Implementación",
 
 cutoff1 = st.sidebar.slider("Frecuencia de Corte 1 (Hz)", 20, int(fs/2)-20, 1000, 10)
 cutoff2 = None
-if filter_kind in ("Pasa-Banda", "Rechaza-Banda"):
+if filter_type in ("Pasa-Banda", "Rechaza-Banda"):
     cutoff2 = st.sidebar.slider("Frecuencia de Corte 2 (Hz)", 20, int(fs/2)-20, 3000, 10)
 
 colp1, colp2, colp3 = st.sidebar.columns(3)
@@ -229,7 +230,7 @@ def process_make_noisy_original(input_signal, fs, add_noise_flag, snr_db):
         original_noisy = add_white_noise(input_signal, snr_db)
     else:
         original_noisy = input_signal
-    filtered = apply_filter(original_noisy, fs, filter_kind, impl, cutoff1, cutoff2, order, rp, rs, fir_taps, window)
+    filtered = apply_filter(original_noisy, fs, filter_type, impl, cutoff1, cutoff2, order, rp, rs, fir_taps, window)
     return original_noisy, filtered
 
 if src != "Micrófono (en vivo)":
@@ -241,9 +242,8 @@ if src != "Micrófono (en vivo)":
             st.info("Carga un archivo WAV para comenzar.")
             st.stop()
         fs_file, data = wavfile.read(uploaded_file)
-        if data.ndim > 1:
-            data = data[:, 0]
-        data = normalize(data.astype(np.float64))
+        data = to_mono(data)
+        data = normalize(data)
         fs = fs_file
         original, filtered = process_make_noisy_original(data, fs, add_noise_flag, snr_db)
 
@@ -285,11 +285,9 @@ else:
 
         # Leer WAV y obtener la frecuencia real del micrófono
         audio_array, fs_real = sf.read(io.BytesIO(wav_audio_data), dtype='int16')
-        if audio_array.ndim > 1:
-            audio_array = audio_array.mean(axis=1).astype(np.int16)  # convertir a mono si es estéreo
-
+        audio_array = to_mono(audio_array)
         # Normalizar
-        audio_original = audio_array.astype(np.float64) / 32768.0
+        audio_original = audio_array / 32768.0
 
         # Añadir ruido (si está activado)
         if add_noise_flag and snr_db is not None:
@@ -302,7 +300,7 @@ else:
             audio_filtered = apply_filter(
                 audio_noisy,
                 fs_real, # usa la frecuencia real del micrófono
-                filter_kind,
+                filter_type,
                 impl,
                 cutoff1,
                 cutoff2,
