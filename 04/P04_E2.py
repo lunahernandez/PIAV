@@ -107,7 +107,7 @@ if src != "Micrófono (en vivo)":
     st.subheader("Reproducción de Audio")
     c1, c2 = st.columns(2)
     with c1:
-        st.write("Original (ruidosa)")
+        st.write("Original")
         b1 = io.BytesIO()
         wavfile.write(b1, fs, (original * 32767).astype(np.int16))
         st.audio(b1.getvalue(), format="audio/wav")
@@ -123,7 +123,6 @@ else:
     from st_audiorec import st_audiorec
 
     st.subheader("Micrófono en vivo")
-    st.info("Presiona el botón para empezar/detener la grabación")
     wav_audio_data = st_audiorec()
 
     if wav_audio_data is not None:
@@ -152,12 +151,13 @@ else:
         fig = plot_signals_like_example(audio_noisy, audio_filtered, fs_real)
         st.pyplot(fig, clear_figure=True)
 
+        st.subheader("Reproducción de Audio")
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("Original")
+            st.write("Original")
             st.audio(buffer_original.getvalue(), format="audio/wav")
         with col2:
-            st.subheader("Con ruido y filtro")
+            st.write("Filtrada")
             st.audio(buffer_filtered.getvalue(), format="audio/wav")
 
         duration = len(audio_filtered) / fs_real
