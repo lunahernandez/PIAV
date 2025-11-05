@@ -148,7 +148,7 @@ def plot_signals_like_example(original_noisy, filtered, fs):
     axes[2].set_title('Señal Original (Ruidosa) - Dominio Frecuencia', fontsize=12, fontweight='bold')
     axes[2].set_xlabel('Frecuencia (Hz)')
     axes[2].set_ylabel('Magnitud')
-    axes[2].set_xlim([0, fs/2])
+    axes[2].set_xlim([0, 2000])
     axes[2].grid(True, alpha=0.3)
 
     # Espectro filtrada
@@ -157,7 +157,7 @@ def plot_signals_like_example(original_noisy, filtered, fs):
     axes[3].set_title('Señal Filtrada - Dominio Frecuencia', fontsize=12, fontweight='bold')
     axes[3].set_xlabel('Frecuencia (Hz)')
     axes[3].set_ylabel('Magnitud')
-    axes[3].set_xlim([0, fs/2])
+    axes[3].set_xlim([0, 2000])
     axes[3].grid(True, alpha=0.3)
 
     plt.tight_layout()
@@ -199,31 +199,56 @@ else:
         snr_db = None
 
 st.sidebar.header("Filtro")
-filter_type = st.sidebar.selectbox("Tipo de Filtro",
-    ["Pasa-Bajo", "Pasa-Alto", "Pasa-Banda", "Rechaza-Banda"])
 
-impl = st.sidebar.selectbox("Implementación",
+filter_type = st.sidebar.selectbox(
+    "Tipo de Filtro",
+    ["Pasa-Bajo", "Pasa-Alto", "Pasa-Banda", "Rechaza-Banda"]
+)
+
+impl = st.sidebar.selectbox(
+    "Implementación",
     [
         "Butterworth (lfilter)", 
         "Butterworth (filtfilt)", 
         "Chebyshev I (filtfilt)", 
         "Chebyshev II (filtfilt)", 
         "FIR (ventana)"
-        ]
-    )
+    ]
+)
 
 cutoff1 = st.sidebar.slider("Frecuencia de Corte 1 (Hz)", 20, int(fs/2)-20, 1000, 10)
 cutoff2 = None
 if filter_type in ("Pasa-Banda", "Rechaza-Banda"):
     cutoff2 = st.sidebar.slider("Frecuencia de Corte 2 (Hz)", 20, int(fs/2)-20, 3000, 10)
 
-colp1, colp2, colp3 = st.sidebar.columns(3)
-order = colp1.slider("Orden", 1, 10, 5, 1)
-rp = colp2.slider("rp (dB) Cheby I", 0.1, 5.0, 1.0, 0.1)
-rs = colp3.slider("rs (dB) Cheby II", 20, 80, 40, 5)
+if "Butterworth" in impl:
+    order = st.sidebar.slider("Orden", 1, 10, 5)
+    rp = 1.0
+    rs = 40.0
+    fir_taps = 401
+    window = "hamming"
 
-fir_taps = st.sidebar.slider("Taps FIR", 51, 2001, 401, 10)
-window = st.sidebar.selectbox("Ventana FIR", ["hamming", "hann", "blackman", "bartlett"])
+elif "Chebyshev I" in impl:
+    col1, col2 = st.sidebar.columns(2)
+    order = col1.slider("Orden", 1, 10, 5)
+    rp = col2.slider("rp (dB) - Banda de paso", 0.1, 5.0, 1.0, 0.1)
+    rs = 40.0
+    fir_taps = 401
+    window = "hamming"
+
+elif "Chebyshev II" in impl:
+    col1, col2 = st.sidebar.columns(2)
+    order = col1.slider("Orden", 1, 10, 5)
+    rs = col2.slider("rs (dB) - Banda de parada", 20, 80, 40, 5)
+    rp = 1.0
+    fir_taps = 401
+    window = "hamming"
+
+elif "FIR" in impl:
+    fir_taps = st.sidebar.slider("Taps FIR", 51, 2001, 401, 10)
+    window = st.sidebar.selectbox("Ventana FIR", ["hamming", "hann", "blackman", "bartlett"])
+    order, rp, rs = 5, 1.0, 40.0
+
 
 def process_make_noisy_original(input_signal, fs, add_noise_flag, snr_db):
     if add_noise_flag and snr_db is not None:
