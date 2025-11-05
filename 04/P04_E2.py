@@ -144,7 +144,7 @@ else:
 
         buffer_original = io.BytesIO()
         buffer_filtered = io.BytesIO()
-        wavfile.write(buffer_original, fs_real, (audio_original * 32767).astype(np.int16))
+        wavfile.write(buffer_original, fs_real, (audio_noisy * 32767).astype(np.int16))
         wavfile.write(buffer_filtered, fs_real, (audio_filtered * 32767).astype(np.int16))
 
         st.subheader("Visualización de las señales")
