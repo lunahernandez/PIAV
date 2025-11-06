@@ -14,9 +14,9 @@ st.set_page_config(page_title="Filtrado de Audio", layout="wide")
 st.title("Filtrado de Señales de Audio")
 
 st.sidebar.header("Fuente de audio")
-src = st.sidebar.selectbox("Origen", ["Nota sintética", "Cargar WAV", "Micrófono (en vivo)"])
+src = st.sidebar.selectbox("Origen", ["Nota sintética", "Cargar WAV", "Micrófono"])
 
-if src != "Micrófono (en vivo)":
+if src != "Micrófono":
     fs = st.sidebar.number_input("Fs (Hz)", 8000, 48000, value=44100, step=1000)
 else:
     fs = 48000
@@ -81,7 +81,7 @@ elif "Elíptico" in impl:
 
 
 # Flujo por fuente de audio
-if src != "Micrófono (en vivo)":
+if src != "Micrófono":
     if src == "Nota sintética":
         clean = make_note(fs, f0, duration, harmonics)
         original, filtered = process_make_noisy_original(
@@ -94,7 +94,7 @@ if src != "Micrófono (en vivo)":
             st.stop()
         fs_file, data = wavfile.read(uploaded_file)
         data = normalize(to_mono(data))
-        fs = fs_file
+        fs = fs_file # Actualizar fs al del archivo cargado
         original, filtered = process_make_noisy_original(
             data, fs, add_noise_flag, snr_db,
             filter_type, impl, cutoff1, cutoff2, order, rp, rs
