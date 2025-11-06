@@ -63,5 +63,14 @@ def main():
         plt.tight_layout()
         plt.show()
 
+        # Guardar las imágenes procesadas
+        out_folder = os.path.join(folder_path, "sobel")
+        os.makedirs(out_folder, exist_ok=True)
+
+        cv.imwrite(os.path.join(out_folder, image_files[0]), sobel1)
+        cv.imwrite(os.path.join(out_folder, image_files[1]), sobel2)
+        print(f"Imágenes filtradas con sobel guardadas en '{out_folder}'.")
+
+
 if __name__ == "__main__":
     main()

@@ -1,7 +1,6 @@
 import cv2 as cv
 import os
 import numpy as np
-import matplotlib.pyplot as plt
 from pathlib import Path
 
 def mejor_roi_por_negros(bw, ventana=500, paso=20, negros_val=255):

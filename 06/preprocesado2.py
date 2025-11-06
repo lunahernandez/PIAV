@@ -7,25 +7,30 @@ import matplotlib.pyplot as plt
 
 def main():
     sample_path = r"06/data"
-    files = os.listdir(sample_path)
+    folders = os.listdir(sample_path)
+    
+    print("Carpetas encontradas:", folders)
 
-    print("Carpetas encontradas:", files)
-
-    for folder in files:
+    for folder in folders:
         folder_path = os.path.join(sample_path, folder)
         if not os.path.isdir(folder_path):
-            continue  # ignora si no es carpeta
-
-        image_files = os.listdir(folder_path)
-        image_files = [f for f in image_files if f.lower().endswith('.png')]
-
-        if len(image_files) < 2:
-            print(f"La carpeta '{folder}' no tiene 2 imágenes (tiene {len(image_files)}).")
             continue
 
-        # Leer las dos imágenes
-        img1_path = os.path.join(folder_path, image_files[0])
-        img2_path = os.path.join(folder_path, image_files[1])
+        roi_path = os.path.join(folder_path, "roi")
+        if not os.path.exists(roi_path):
+            print(f"La carpeta '{folder}' no tiene una subcarpeta 'roi'.")
+            continue
+
+        images_files = os.listdir(roi_path)
+        image_files = [f for f in images_files if f.lower().endswith('.png')]
+
+        if len(image_files) < 2:
+            print(f"No hay suficientes imágenes en {roi_path}")
+            continue
+
+        # ✅ Corregido: leer desde roi_path
+        img1_path = os.path.join(roi_path, image_files[0])
+        img2_path = os.path.join(roi_path, image_files[1])
 
         img1 = cv.imread(img1_path)
         img2 = cv.imread(img2_path)
@@ -38,7 +43,7 @@ def main():
         eq1 = cv.equalizeHist(gray1)
         eq2 = cv.equalizeHist(gray2)
 
-        # Mostrar resultados com originales y ecualizadas
+        # Mostrar resultados
         plt.figure(figsize=(10, 5))
         plt.subplot(2, 2, 1)
         plt.title('Imagen 1 Original')
@@ -53,7 +58,6 @@ def main():
         plt.title('Imagen 1 Ecualizada')
         plt.imshow(eq1, cmap='gray')
         plt.axis('off')
-
         plt.subplot(2, 2, 4)
         plt.title('Imagen 2 Ecualizada')
         plt.imshow(eq2, cmap='gray')
