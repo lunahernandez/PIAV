@@ -6,7 +6,7 @@ from scipy.io import wavfile
 
 from utils import (
     to_mono, normalize, make_note, process_make_noisy_original,
-    plot_signals_like_example, apply_filter
+    plot_signals_like_example
 )
 
 
