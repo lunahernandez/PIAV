@@ -38,7 +38,7 @@ def norm_int(v, lo, hi):
     return max(lo, min(hi, v))
 
 # ----------------------------
-# Transformaciones (C y D)
+# Transformaciones “por defecto”
 # ----------------------------
 def rotate_image(img, angle):
     h, w = img.shape[:2]
@@ -88,8 +88,8 @@ def deform_radial(img, k=0.00001):
     h, w = img.shape[:2]
     fx = fy = 1.0
     cx, cy = w / 2, h / 2
-    K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
-    D = np.array([k, 0, 0, 0])
+    K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
+    D = np.array([k, 0, 0, 0], dtype=np.float32)
     map1, map2 = cv.initUndistortRectifyMap(K, D, None, K, (w, h), cv.CV_32FC1)
     return cv.remap(img, map1, map2, interpolation=cv.INTER_LINEAR, borderValue=(255, 255, 255))
 
@@ -184,3 +184,101 @@ def is_valid_quad(poly, img_shape, min_area_ratio=1e-4, max_area_ratio=0.95):
     if lens.min() < 5:
         return False
     return True
+
+# ----------------------------
+# Motor de transformaciones personalizadas
+# ----------------------------
+def make_canvas_centered(img, scale_factor=2):
+    """Devuelve un canvas blanco (CH,CW,3) y el offset (ox,oy) para situar la imagen centrada."""
+    h, w = img.shape[:2]
+    CW, CH = int(w * scale_factor), int(h * scale_factor)
+    canvas = np.full((CH, CW, 3), 255, dtype=np.uint8)
+    ox, oy = (CW - w) // 2, (CH - h) // 2
+    canvas[oy:oy+h, ox:ox+w] = img
+    return canvas, (ox, oy), (CW, CH)
+
+def affine_matrix_with_pivot(angle_deg, sx, sy, cx, cy, tx, ty):
+    """Construye M 2x3 tal que x' = A x + b, con pivote (cx,cy) y traslación (tx,ty)."""
+    rad = np.deg2rad(angle_deg)
+    c, s = np.cos(rad), np.sin(rad)
+    R = np.array([[ c, -s],
+                  [ s,  c]], dtype=np.float32)
+    S = np.array([[sx, 0.0],
+                  [0.0, sy]], dtype=np.float32)
+    A = (R @ S).astype(np.float32)
+    I = np.eye(2, dtype=np.float32)
+    c_vec = np.array([cx, cy], dtype=np.float32)
+    t_vec = np.array([tx, ty], dtype=np.float32)
+    b = (t_vec + (I - A) @ c_vec).astype(np.float32)  # b = t + (I - A) c
+    M = np.hstack([A, b.reshape(2, 1)])  # 2x3
+    return M
+
+def warp_affine_on_canvas(img, scale_factor, tx, ty, angle, cx, cy, sx, sy):
+    """Aplica afin con pivote a la imagen centrada en un canvas ampliado."""
+    canvas, (ox, oy), (CW, CH) = make_canvas_centered(img, scale_factor)
+    M = affine_matrix_with_pivot(angle, sx, sy, cx, cy, tx, ty)
+    out = cv.warpAffine(canvas, M, (CW, CH), borderValue=(255, 255, 255))
+    # recorte de vista central (mismo tamaño que la imagen original)
+    view = out[oy:oy+img.shape[0], ox:ox+img.shape[1]].copy()
+    return out, view, (CW, CH)
+
+def apply_distortion_full(image, k1, k2, p1, p2, k3, center=None, focal=10.0):
+    """Aplica distorsión radial/tangencial (como la demo), devolviendo imagen del mismo tamaño."""
+    h, w = image.shape[:2]
+    cam = np.eye(3, dtype=np.float32)
+    cam[0, 0] = focal
+    cam[1, 1] = focal
+    if center is None:
+        cam[0, 2] = w / 2.0
+        cam[1, 2] = h / 2.0
+    else:
+        cam[0, 2] = float(center[0])
+        cam[1, 2] = float(center[1])
+
+    dist = np.zeros((5, 1), np.float64)
+    dist[0, 0] = float(k1)
+    dist[1, 0] = float(k2)
+    dist[2, 0] = float(p1)
+    dist[3, 0] = float(p2)
+    dist[4, 0] = float(k3)
+
+    # undistort aplica el modelo inverso: para simular distorsión “hacia fuera”
+    # puedes usar signos positivos/negativos apropiados en k1,k2,k3.
+    out = cv.undistort(image, cam, dist)
+    return out
+
+def apply_transform_spec(base_img, spec):
+    """
+    Aplica una transformación según un spec:
+      - {'type':'affine', 'scale_factor':2.0, 'tx':.., 'ty':.., 'angle':.., 'cx':.., 'cy':.., 'sx':..,'sy':..}
+      - {'type':'distortion','k1':..,'k2':..,'p1':..,'p2':..,'k3':..,'cx':.. or None,'cy':.. or None,'focal':..}
+    Devuelve (nombre, imagen_transformada).
+    """
+    t = spec.get("type")
+    name = spec.get("name", t)
+    if t == "affine":
+        sf = float(spec.get("scale_factor", 2.0))
+        tx = float(spec.get("tx", 0.0))
+        ty = float(spec.get("ty", 0.0))
+        ang = float(spec.get("angle", 0.0))
+        cx  = float(spec.get("cx", 0.0))
+        cy  = float(spec.get("cy", 0.0))
+        sx  = float(spec.get("sx", 1.0))
+        sy  = float(spec.get("sy", 1.0))
+        out, view, _ = warp_affine_on_canvas(base_img, sf, tx, ty, ang, cx, cy, sx, sy)
+        return name, view
+    elif t == "distortion":
+        k1 = float(spec.get("k1", 0.0))
+        k2 = float(spec.get("k2", 0.0))
+        p1 = float(spec.get("p1", 0.0))
+        p2 = float(spec.get("p2", 0.0))
+        k3 = float(spec.get("k3", 0.0))
+        focal = float(spec.get("focal", 10.0))
+        if spec.get("cx") is None or spec.get("cy") is None:
+            center = None
+        else:
+            center = (float(spec["cx"]), float(spec["cy"]))
+        out = apply_distortion_full(base_img, k1, k2, p1, p2, k3, center=center, focal=focal)
+        return name, out
+    else:
+        raise ValueError(f"Tipo de transformación no soportado: {t}")
