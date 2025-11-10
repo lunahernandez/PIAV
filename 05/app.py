@@ -216,7 +216,7 @@ def is_valid_quad(poly, img_shape, min_area_ratio=1e-4, max_area_ratio=0.95):
 st.sidebar.title("Parámetros y datos")
 
 # Un único uploader
-upl = st.sidebar.file_uploader("Sube una imagen (cualquier naturaleza)", type=["png", "jpg", "jpeg", "bmp"])
+upl = st.sidebar.file_uploader("Sube una imagen", type=["png", "jpg", "jpeg", "bmp"])
 if upl is not None:
     st.session_state.current_image = file_to_bgr(upl)
 
@@ -270,7 +270,7 @@ tab1, tab2, tab3 = st.tabs(["Características SIFT", "Seleccionar ROI", "Detecta
 # Tab 1: Características SIFT
 # ----------------------------
 with tab1:
-    st.subheader("Vista de keypoints SIFT (imagen actual)")
+    st.subheader("Vista de keypoints SIFT")
     img = st.session_state.current_image
     if img is None:
         st.info("Sube una imagen en el sidebar.")
@@ -278,8 +278,7 @@ with tab1:
         gray = to_gray(img)
         (kp, des), _ = extract_sift(gray, st.session_state.sift)
         vis = cv.drawKeypoints(img, kp, None, flags=cv.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
-        st.write(f"Keypoints detectados: {len(kp)}")
-        st.image(bgr_to_rgb(vis), caption=f"Keypoints: {len(kp)}", use_container_width=True)
+        st.image(bgr_to_rgb(vis), caption=f"Keypoints detectados: {len(kp)}", use_container_width=True)
 
 # ----------------------------
 # Tab 2: Seleccionar ROI (cropper o coordenadas)
@@ -291,25 +290,24 @@ except Exception:
     HAS_CROPPER = False
 
 with tab2:
-    st.subheader("Definir ROI manualmente sobre la imagen actual")
+    st.subheader("Definir ROI")
     img = st.session_state.current_image
     if img is None:
         st.info("Sube una imagen en el sidebar.")
     else:
         rgb = bgr_to_rgb(img)
         h, w = rgb.shape[:2]
-        st.caption("Previsualización:")
         st.image(rgb, use_container_width=True)
 
         modo = st.radio(
             "Modo de selección",
-            options=["Arrastrar (cropper)", "Coordenadas"],
+            options=["Arrastrar", "Coordenadas"],
             help="Elige cómo quieres indicar la ROI"
         )
 
         roi_img, bbox = None, None
 
-        if modo == "Arrastrar (cropper)":
+        if modo == "Arrastrar":
             if not HAS_CROPPER:
                 st.error("Instala streamlit-cropper: pip install streamlit-cropper")
             else:
@@ -321,7 +319,7 @@ with tab2:
                     aspect_ratio=None,
                     return_type="image",
                 )
-                if st.button("Guardar ROI para la etiqueta seleccionada"):
+                if st.button("Guardar ROI"):
                     if cropped is not None:
                         roi_bgr = np.array(cropped)[:, :, ::-1]
                         h2, w2 = roi_bgr.shape[:2]
