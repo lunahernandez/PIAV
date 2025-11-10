@@ -1,7 +1,6 @@
 # app.py
 import io
 import zipfile
-from pathlib import Path
 from enum import Enum
 
 import cv2 as cv
@@ -9,17 +8,10 @@ import numpy as np
 from PIL import Image
 import streamlit as st
 
-# Intentamos usar canvas para ROI
-try:
-    from streamlit_drawable_canvas import st_canvas
-    HAS_CANVAS = True
-except Exception:
-    HAS_CANVAS = False
-
 # ----------------------------
-# Tipos e infraestructura
+# Etiquetas conceptuales
 # ----------------------------
-class ImageType(Enum):
+class Label(Enum):
     LIBRE = "LIBRE"
     MEDICA = "MEDICA"
     TELEMETRICA = "TELEMETRICA"
@@ -33,60 +25,19 @@ DEFAULT_SIFT = dict(
 )
 
 def ensure_ss():
-    if "images" not in st.session_state:
-        st.session_state.images = {}            # {ImageType: np.ndarray BGR}
-    if "current_type" not in st.session_state:
-        st.session_state.current_type = ImageType.LIBRE.name  # 'LIBRE' (string)
+    if "current_image" not in st.session_state:
+        st.session_state.current_image = None   # np.ndarray (BGR)
+    if "current_label" not in st.session_state:
+        st.session_state.current_label = Label.LIBRE.value
     if "sift" not in st.session_state:
         st.session_state.sift = DEFAULT_SIFT.copy()
-    if "rois" not in st.session_state:
-        st.session_state.rois = {}              # {ImageType: dict(image=np.ndarray, bbox=(x,y,w,h))}
-    if "transforms_cache" not in st.session_state:
-        st.session_state.transforms_cache = {}
-
+    # Guardamos pares imagen+roi por etiqueta (clave: string "LIBRE"/"MEDICA"/"TELEMETRICA")
+    if "images_by_label" not in st.session_state:
+        st.session_state.images_by_label = {}   # {label_str: np.ndarray BGR}
+    if "rois_by_label" not in st.session_state:
+        st.session_state.rois_by_label = {}     # {label_str: {"image": roi_bgr, "bbox": (x,y,w,h)}}
 
 ensure_ss()
-
-# --- Normalización de claves de session_state a strings ---
-def _normalize_dict_keys_to_str(d):
-    changed = False
-    keys = list(d.keys())
-    for k in keys:
-        if isinstance(k, ImageType):
-            d[k.name] = d.pop(k)   # Enum -> 'LIBRE'
-            changed = True
-    return changed
-
-_normalize = False
-if isinstance(st.session_state.current_type, ImageType):
-    st.session_state.current_type = st.session_state.current_type.name
-    _normalize = True
-
-# Rehacer claves de images/rois a strings si traen Enums de recargas previas
-if any(isinstance(k, ImageType) for k in st.session_state.images.keys()):
-    _normalize |= _normalize_dict_keys_to_str(st.session_state.images)
-
-if any(isinstance(k, ImageType) for k in st.session_state.rois.keys()):
-    _normalize |= _normalize_dict_keys_to_str(st.session_state.rois)
-
-
-def current_enum():
-    # Convierte el nombre guardado en Enum
-    return ImageType[st.session_state.current_type]
-
-def current_name() -> str:
-    return st.session_state.current_type  # 'LIBRE', ...
-
-def to_enum(name: str) -> ImageType:
-    return ImageType[name]
-
-def get_img(name: str):
-    return st.session_state.images.get(name)
-
-def get_roi(name: str):
-    return st.session_state.rois.get(name)
-
-
 
 # ----------------------------
 # Utilidades de imagen
@@ -108,7 +59,7 @@ def draw_text(img, text, org=(10, 30), color=(0, 255, 0)):
     cv.putText(vis, text, org, cv.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv.LINE_AA)
     return vis
 
-def norm_int(v, lo, hi):  # clamp
+def norm_int(v, lo, hi):
     return max(lo, min(hi, v))
 
 # ----------------------------
@@ -167,10 +118,10 @@ def deform_radial(img, k=0.00001):
     map1, map2 = cv.initUndistortRectifyMap(K, D, None, K, (w, h), cv.CV_32FC1)
     return cv.remap(img, map1, map2, interpolation=cv.INTER_LINEAR, borderValue=(255, 255, 255))
 
-def deform_barrel(img, k=0.00001):   # barril
+def deform_barrel(img, k=0.00001):
     return deform_radial(img, k=k)
 
-def deform_pincushion(img, k=-0.00001):  # cojín
+def deform_pincushion(img, k=-0.00001):
     return deform_radial(img, k=k)
 
 # ----------------------------
@@ -258,44 +209,26 @@ def is_valid_quad(poly, img_shape, min_area_ratio=1e-4, max_area_ratio=0.95):
     if lens.min() < 5:
         return False
     return True
+
 # ----------------------------
 # Sidebar: carga y SIFT
 # ----------------------------
 st.sidebar.title("Parámetros y datos")
 
-# Selección de tipo actual usando STRINGS (no Enums)
-type_options = [t.name for t in ImageType]  # ['LIBRE','MEDICA','TELEMETRICA']
-try:
-    idx = type_options.index(st.session_state.current_type)
-except ValueError:
-    idx = 0
-selected_name = st.sidebar.selectbox(
-    "Tipo de imagen actual",
-    options=type_options,
-    index=idx,
+# Un único uploader
+upl = st.sidebar.file_uploader("Sube una imagen (cualquier naturaleza)", type=["png", "jpg", "jpeg", "bmp"])
+if upl is not None:
+    st.session_state.current_image = file_to_bgr(upl)
+
+# Etiqueta conceptual para guardar/recuperar
+label_str = st.sidebar.selectbox(
+    "Etiqueta conceptual (para guardar ROI/imagen)",
+    options=[t.value for t in Label],
+    index=[t.value for t in Label].index(st.session_state.current_label) if st.session_state.current_label in [t.value for t in Label] else 0,
 )
-st.session_state.current_type = selected_name  # guardamos string
+st.session_state.current_label = label_str
 
-# Carga de imágenes (widgets con clave estable basada en string)
-st.sidebar.subheader("Subir imágenes")
-for t in ImageType:
-    upl = st.sidebar.file_uploader(
-        f"{t.value}", type=["png", "jpg", "jpeg", "bmp"], key=f"upl_{t.name}"
-    )
-    if upl is not None:
-        st.session_state.images[t.name] = file_to_bgr(upl)  # <-- string
-
-
-# Puerta de entrada: exigir las 3 imágenes
-missing = [t for t in ImageType if t.name not in st.session_state.images]
-if missing:
-    faltan = ", ".join([t.value for t in missing])
-    st.sidebar.error(f"Faltan por subir: {faltan}")
-    st.title("Detección de características SIFT")
-    st.info("Sube las tres imágenes (LIBRE, MEDICA, TELEMETRICA) en el sidebar para continuar.")
-    st.stop()
-
-# Parámetros SIFT (solo si hay 3 imágenes)
+# Controles SIFT
 st.sidebar.subheader("SIFT")
 nfeatures = st.sidebar.slider("nfeatures", 0, 10000, int(st.session_state.sift["nfeatures"]), 50)
 nOctaveLayers = st.sidebar.slider("nOctaveLayers", 1, 10, int(st.session_state.sift["nOctaveLayers"]), 1)
@@ -314,6 +247,19 @@ if st.sidebar.button("Guardar parámetros SIFT"):
 if st.sidebar.button("Restaurar valores por defecto"):
     st.session_state.sift = DEFAULT_SIFT.copy()
 
+# Botones para asociar la imagen actual a la etiqueta y para limpiar
+colA, colB = st.sidebar.columns(2)
+with colA:
+    if st.button("Guardar imagen en etiqueta"):
+        if st.session_state.current_image is None:
+            st.warning("Primero sube una imagen.")
+        else:
+            st.session_state.images_by_label[label_str] = st.session_state.current_image
+with colB:
+    if st.button("Limpiar etiqueta"):
+        st.session_state.images_by_label.pop(label_str, None)
+        st.session_state.rois_by_label.pop(label_str, None)
+
 # ----------------------------
 # Tabs principales
 # ----------------------------
@@ -324,21 +270,19 @@ tab1, tab2, tab3 = st.tabs(["Características SIFT", "Seleccionar ROI", "Detecta
 # Tab 1: Características SIFT
 # ----------------------------
 with tab1:
-    st.subheader("Vista de keypoints SIFT")
-    cname = current_name()              # 'LIBRE'
-    img = get_img(cname)                # dict por string
+    st.subheader("Vista de keypoints SIFT (imagen actual)")
+    img = st.session_state.current_image
     if img is None:
-        st.info("Sube la imagen del tipo actual en el sidebar.")
+        st.info("Sube una imagen en el sidebar.")
     else:
         gray = to_gray(img)
         (kp, des), _ = extract_sift(gray, st.session_state.sift)
         vis = cv.drawKeypoints(img, kp, None, flags=cv.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
         st.write(f"Keypoints detectados: {len(kp)}")
-        st.image(bgr_to_rgb(vis), caption=f"{cname}: {len(kp)} puntos", use_container_width=True)
-
+        st.image(bgr_to_rgb(vis), caption=f"Keypoints: {len(kp)}", use_container_width=True)
 
 # ----------------------------
-# Tab 2: Seleccionar ROI (2 modos: cropper y coordenadas)
+# Tab 2: Seleccionar ROI (cropper o coordenadas)
 # ----------------------------
 try:
     from streamlit_cropper import st_cropper
@@ -347,81 +291,76 @@ except Exception:
     HAS_CROPPER = False
 
 with tab2:
-    st.subheader("Definir ROI manualmente")
-    cname = current_name()               # 'LIBRE'
-    img = get_img(cname)                 # dict por string
-
+    st.subheader("Definir ROI manualmente sobre la imagen actual")
+    img = st.session_state.current_image
     if img is None:
-        st.info("Sube la imagen del tipo actual en el sidebar.")
-        st.stop()
+        st.info("Sube una imagen en el sidebar.")
+    else:
+        rgb = bgr_to_rgb(img)
+        h, w = rgb.shape[:2]
+        st.caption("Previsualización:")
+        st.image(rgb, use_container_width=True)
 
-    rgb = bgr_to_rgb(img)
-    h, w = rgb.shape[:2]
+        modo = st.radio(
+            "Modo de selección",
+            options=["Arrastrar (cropper)", "Coordenadas"],
+            help="Elige cómo quieres indicar la ROI"
+        )
 
-    st.caption("Previsualización de la imagen cargada:")
-    st.image(rgb, use_container_width=True)
+        roi_img, bbox = None, None
 
-    modo = st.radio(
-        "Modo de selección",
-        options=["Arrastrar (cropper)", "Coordenadas"],
-        help="Elige cómo quieres indicar la ROI"
-    )
+        if modo == "Arrastrar (cropper)":
+            if not HAS_CROPPER:
+                st.error("Instala streamlit-cropper: pip install streamlit-cropper")
+            else:
+                pil = Image.fromarray(rgb)
+                cropped = st_cropper(
+                    pil,
+                    box_color="red",
+                    realtime_update=True,
+                    aspect_ratio=None,
+                    return_type="image",
+                )
+                if st.button("Guardar ROI para la etiqueta seleccionada"):
+                    if cropped is not None:
+                        roi_bgr = np.array(cropped)[:, :, ::-1]
+                        h2, w2 = roi_bgr.shape[:2]
+                        roi_img = roi_bgr
+                        bbox = (0, 0, w2, h2)
+                    else:
+                        st.error("No se obtuvo recorte válido.")
 
-    roi_img, bbox = None, None
+        elif modo == "Coordenadas":
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                x = st.number_input("x", min_value=0, max_value=max(0, w-1), value=0, step=1)
+            with c2:
+                y = st.number_input("y", min_value=0, max_value=max(0, h-1), value=0, step=1)
+            with c3:
+                ww = st.number_input("ancho", min_value=1, max_value=w, value=min(100, w), step=1)
+            with c4:
+                hh = st.number_input("alto", min_value=1, max_value=h, value=min(100, h), step=1)
 
-    # --- MODO 1: Arrastrar (cropper) ---
-    if modo == "Arrastrar (cropper)":
-        if not HAS_CROPPER:
-            st.error("Instala streamlit-cropper: pip install streamlit-cropper")
-        else:
-            pil = Image.fromarray(rgb)
-            cropped = st_cropper(
-                pil,
-                box_color="red",
-                realtime_update=True,
-                aspect_ratio=None,
-                return_type="image",
-            )
-            if st.button("Guardar ROI"):
-                if cropped is not None:
-                    roi_bgr = np.array(cropped)[:, :, ::-1]  # RGB->BGR
-                    h2, w2 = roi_bgr.shape[:2]
-                    roi_img = roi_bgr
-                    bbox = (0, 0, w2, h2)  # ROI ya recortada
-                else:
-                    st.error("No se obtuvo recorte válido.")
+            if st.button("Guardar ROI para la etiqueta seleccionada"):
+                x = int(norm_int(x, 0, w-1))
+                y = int(norm_int(y, 0, h-1))
+                ww = int(norm_int(ww, 1, w - x))
+                hh = int(norm_int(hh, 1, h - y))
+                bbox = (x, y, ww, hh)
+                roi_img = img[y:y+hh, x:x+ww]
 
-    # --- MODO 2: Coordenadas numéricas ---
-    elif modo == "Coordenadas":
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            x = st.number_input("x", min_value=0, max_value=max(0, w-1), value=0, step=1)
-        with c2:
-            y = st.number_input("y", min_value=0, max_value=max(0, h-1), value=0, step=1)
-        with c3:
-            ww = st.number_input("ancho", min_value=1, max_value=w, value=min(100, w), step=1)
-        with c4:
-            hh = st.number_input("alto", min_value=1, max_value=h, value=min(100, h), step=1)
+        # Guardado: imagen+ROI vinculadas a la etiqueta actual
+        if roi_img is not None and bbox is not None:
+            # Asegura que la imagen de esa etiqueta sea la actual (si no lo estaba ya)
+            st.session_state.images_by_label[label_str] = img
+            st.session_state.rois_by_label[label_str] = dict(image=roi_img, bbox=bbox)
+            st.success(f"ROI guardada para etiqueta {label_str}: {bbox}")
+            st.image(bgr_to_rgb(roi_img), caption="ROI", use_container_width=False)
 
-        if st.button("Guardar ROI"):
-            x = int(norm_int(x, 0, w-1))
-            y = int(norm_int(y, 0, h-1))
-            ww = int(norm_int(ww, 1, w - x))
-            hh = int(norm_int(hh, 1, h - y))
-            bbox = (x, y, ww, hh)
-            roi_img = img[y:y+hh, x:x+ww]
-
-    # --- Guardado y visualización final comunes ---
-    if roi_img is not None and bbox is not None:
-        st.session_state.rois[cname] = dict(image=roi_img, bbox=bbox)
-        st.image(bgr_to_rgb(roi_img), caption="ROI", use_container_width=False)
-
-    if get_roi(cname):
-        st.caption("ROI actual:")
-        st.image(bgr_to_rgb(get_roi(cname)["image"]), use_container_width=False)
-
-
-
+        # Mostrar ROI previa si existe
+        if label_str in st.session_state.rois_by_label:
+            st.caption(f"ROI previa en {label_str}:")
+            st.image(bgr_to_rgb(st.session_state.rois_by_label[label_str]["image"]), use_container_width=False)
 
 # ----------------------------
 # Tab 3: Detectar ROI
@@ -429,15 +368,16 @@ with tab2:
 with tab3:
     st.subheader("Detección de ROI en transformaciones y deformaciones")
 
-    # Tipos disponibles: aquellos cuyo nombre está en ambos diccionarios
-    tipos_disp = [t for t in ImageType if (t.name in st.session_state.images) and (t.name in st.session_state.rois)]
-    if not tipos_disp:
-        st.info("Necesitas al menos una imagen subida y su ROI guardada.")
+    # Etiquetas disponibles: deben tener imagen y ROI guardadas
+    disponibles = [l for l in st.session_state.images_by_label.keys() if l in st.session_state.rois_by_label]
+    if not disponibles:
+        st.info("No hay ninguna etiqueta con imagen y ROI guardadas. Guarda al menos una en la pestaña anterior.")
     else:
-        tsel = st.selectbox("Tipo a evaluar", options=tipos_disp, format_func=lambda t: t.value)
-        base = st.session_state.images[tsel.name]
-        roi  = st.session_state.rois[tsel.name]["image"]
-        # Opciones de transformaciones
+        tsel = st.selectbox("Etiqueta a evaluar", options=disponibles)
+
+        base = st.session_state.images_by_label[tsel]
+        roi = st.session_state.rois_by_label[tsel]["image"]
+
         st.markdown("#### Transformaciones a generar")
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -467,7 +407,6 @@ with tab3:
             if des_roi is None or len(kp_roi) == 0:
                 st.error("La ROI no tiene descriptores con los parámetros SIFT actuales. Ajusta SIFT en el sidebar.")
             else:
-                # Generamos lista de transformaciones
                 todo = []
                 if rot30: todo.append(("rotacion_30", rotate_image(base, 30)))
                 if rotm45: todo.append(("rotacion_-45", rotate_image(base, -45)))
@@ -488,6 +427,7 @@ with tab3:
                     imgs_out = []
                     prefer_affine = (modo == "deformacion")
                     crosscheck = (modo == "deformacion")
+
                     for name, img_t in todo:
                         gray_t = to_gray(img_t)
                         kp_t, des_t = sift.detectAndCompute(gray_t, None)
@@ -495,8 +435,8 @@ with tab3:
                         good_n = 0
                         inliers = 0
                         kind = None
-                        poly = None
                         vis = img_t.copy()
+
                         if des_t is not None and len(kp_t) > 1:
                             good = match_flann(des_roi, des_t, ratio=ratio, crosscheck=crosscheck)
                             good_n = len(good)
@@ -522,22 +462,24 @@ with tab3:
                         results.append(dict(nombre=name, status=status, good=good_n, inliers=inliers, modelo=kind or "-"))
                         imgs_out.append((name, vis))
 
-                    # Mostrar resultados
                     st.markdown("#### Resultados")
                     for name, vis in imgs_out:
                         st.image(bgr_to_rgb(vis), caption=name, use_container_width=True)
 
-                    # Tabla
                     st.markdown("#### Resumen")
                     import pandas as pd
                     df = pd.DataFrame(results)
                     st.dataframe(df, use_container_width=True)
 
-                    # Descarga ZIP
                     buf = io.BytesIO()
                     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                         for name, vis in imgs_out:
                             _, png = cv.imencode(".png", vis[:, :, ::-1])
-                            zf.writestr(f"{tsel.value}_{name}.png", png.tobytes())
+                            zf.writestr(f"{tsel}_{name}.png", png.tobytes())
                         zf.writestr("resumen.csv", df.to_csv(index=False).encode("utf-8"))
-                    st.download_button("Descargar resultados (ZIP)", data=buf.getvalue(), file_name=f"resultados_{tsel.value}.zip", mime="application/zip")
+                    st.download_button(
+                        "Descargar resultados (ZIP)",
+                        data=buf.getvalue(),
+                        file_name=f"resultados_{tsel}.zip",
+                        mime="application/zip"
+                    )
