@@ -108,7 +108,7 @@ with tab1:
         st.image(bgr_to_rgb(vis), caption=f"Keypoints detectados: {len(kp)}", use_container_width=True)
 
 # ----------------------------
-# Tab 2: Selección de ROI
+# Tab 2: Selección de ROI (solo arrastrar, con botón de carga)
 # ----------------------------
 try:
     from streamlit_cropper import st_cropper
@@ -119,16 +119,17 @@ except Exception:
 with tab2:
     st.subheader("Definir ROI (Región de Interés)")
     img = st.session_state.current_image
+
     if img is None:
         st.info("Sube una imagen en el sidebar.")
     else:
+        # Panel ROI guardada
         if st.session_state.roi_data is not None:
             st.success("ROI guardada correctamente")
             col1, col2 = st.columns([2, 1])
             with col1:
                 saved_roi = st.session_state.roi_data["image"]
-                saved_bbox = st.session_state.roi_data["bbox"]
-                st.image(bgr_to_rgb(saved_roi), caption=f"ROI guardada - Posición: {saved_bbox}", use_container_width=True)
+                st.image(bgr_to_rgb(saved_roi), caption=f"ROI guardada", use_container_width=True)
             with col2:
                 st.metric("Ancho", f"{saved_roi.shape[1]} px")
                 st.metric("Alto", f"{saved_roi.shape[0]} px")
@@ -137,78 +138,58 @@ with tab2:
                     st.rerun()
             st.markdown("---")
 
-        rgb = bgr_to_rgb(img)
-        h, w = rgb.shape[:2]
+        if not HAS_CROPPER:
+            st.error("Instala streamlit-cropper: pip install streamlit-cropper")
+        else:
+            rgb = bgr_to_rgb(img)
+            h, w = rgb.shape[:2]
+            pil = Image.fromarray(rgb)
 
-        st.write("Selecciona una región de interés:")
-        modo = st.radio(
-            "Modo de selección",
-            options=["Coordenadas", "Arrastrar"],
-            help="Elige cómo quieres indicar la ROI",
-            horizontal=True
-        )
+            # Señal de imagen actual para reiniciar el flujo si cambia la imagen
+            img_sig = (h, w)
+            if "roi_img_sig" not in st.session_state or st.session_state.roi_img_sig != img_sig:
+                st.session_state.roi_img_sig = img_sig
+                st.session_state.roi_ready = False
+                st.session_state.roi_last_crop = None
 
-        if modo == "Coordenadas":
-            st.image(rgb, use_container_width=True)
-            c1, c2, c3, c4 = st.columns(4)
-            with c1:
-                x = st.number_input("x", min_value=0, max_value=max(0, w-1), value=0, step=1, key="x_coord")
-            with c2:
-                y = st.number_input("y", min_value=0, max_value=max(0, h-1), value=0, step=1, key="y_coord")
-            with c3:
-                ww = st.number_input("ancho", min_value=1, max_value=w, value=min(100, w), step=1, key="w_coord")
-            with c4:
-                hh = st.number_input("alto", min_value=1, max_value=h, value=min(100, h), step=1, key="h_coord")
+            # Botón de control
+            if not st.session_state.get("roi_ready", False):
+                if st.button("Iniciar selección", type="primary", key="btn_start_crop"):
+                    st.session_state.roi_ready = True
+                    st.rerun()
 
-            if st.button("Guardar ROI", key="save_roi_coords", type="primary"):
-                try:
-                    x_int = int(norm_int(x, 0, w-1))
-                    y_int = int(norm_int(y, 0, h-1))
-                    ww_int = int(norm_int(ww, 1, w - x_int))
-                    hh_int = int(norm_int(hh, 1, h - y_int))
-                    bbox = (x_int, y_int, ww_int, hh_int)
-                    roi_img = img[y_int:y_int+hh_int, x_int:x_int+ww_int].copy()
 
-                    if roi_img.size == 0:
-                        st.error("El ROI está vacío. Ajusta las coordenadas.")
-                    else:
-                        st.session_state.roi_data = {"image": roi_img, "bbox": bbox}
-                        st.session_state.roi_saved = True
-                        st.success(f"ROI guardado: {bbox}")
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Error al guardar ROI: {str(e)}")
+            # Mostrar imagen base siempre (da contexto y fuerza el primer render)
+            st.image(rgb, caption="Imagen original", use_container_width=True)
 
-        elif modo == "Arrastrar":
-            if not HAS_CROPPER:
-                st.error("Instala streamlit-cropper: pip install streamlit-cropper")
-                st.info("Mientras tanto, usa el modo 'Coordenadas'")
-            else:
-                st.write("Arrastra para seleccionar la región:")
-                pil = Image.fromarray(rgb)
+            cropped = None
+            if st.session_state.get("roi_ready", False):
+                # Montamos el cropper solo cuando el usuario lo pide
                 cropped = st_cropper(
                     pil,
-                    box_color="red",
                     realtime_update=True,
                     aspect_ratio=None,
                     return_type="image",
+                    box_color="red",
+                    stroke_width=2,
+                    key=f"roi_cropper_active_{h}x{w}"
                 )
-                if st.button("Guardar ROI", key="save_roi_drag", type="primary"):
-                    try:
-                        if cropped is not None and cropped.size[0] > 0 and cropped.size[1] > 0:
-                            roi_bgr = np.array(cropped)[:, :, ::-1].copy()
-                            h2, w2 = roi_bgr.shape[:2]
-                            if h2 > 0 and w2 > 0:
-                                st.session_state.roi_data = {"image": roi_bgr, "bbox": (0, 0, w2, h2)}
-                                st.session_state.roi_saved = True
-                                st.success(f"ROI guardado: {w2}x{h2} px")
-                                st.rerun()
-                            else:
-                                st.error("El ROI está vacío.")
-                        else:
-                            st.error("No se obtuvo un recorte válido. Intenta de nuevo.")
-                    except Exception as e:
-                        st.error(f"Error al guardar ROI: {str(e)}")
+                st.session_state.roi_last_crop = cropped
+            else:
+                st.caption("Pulsa «Iniciar selección» para activar el recortador.")
+
+            # Guardar ROI
+            if st.button("Guardar ROI", key="save_roi_drag", type="primary"):
+                use_crop = st.session_state.get("roi_last_crop", None)
+                if use_crop is None or use_crop.size[0] == 0 or use_crop.size[1] == 0:
+                    st.error("No se obtuvo un recorte válido. Intenta de nuevo.")
+                else:
+                    roi_bgr = np.array(use_crop, copy=True)[:, :, ::-1]
+                    hh, ww = roi_bgr.shape[:2]
+                    st.session_state.roi_data = {"image": roi_bgr, "bbox": (0, 0, ww, hh)}
+                    st.session_state.roi_saved = True
+                    st.success(f"ROI guardada: {ww}x{hh} px")
+                    st.rerun()
 
 # ----------------------------
 # Tab 3: Detección ROI (solo BFMatcher)
