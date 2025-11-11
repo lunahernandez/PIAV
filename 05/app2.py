@@ -9,11 +9,12 @@ import cv2 as cv
 
 from utils import (
     DEFAULT_SIFT,
-    file_to_bgr, bgr_to_rgb, to_gray, draw_text, norm_int,
+    file_to_bgr, bgr_to_rgb, to_gray, norm_int,
     rotate_image, scale_image, translate_image, perspective_transform,
     deform_barrel, deform_pincushion,
-    extract_sift, match_flann, estimate_geom, project_box, is_valid_quad,
-    make_canvas_centered, warp_affine_on_canvas, apply_transform_spec
+    extract_sift, estimate_geom, project_box, is_valid_quad,
+    warp_affine_on_canvas, apply_transform_spec, match_bf_crosscheck,
+    draw_matches_panel, to_gray, bgr_to_rgb, match_knn_ratio
 )
 
 # ----------------------------
@@ -29,7 +30,7 @@ def ensure_ss():
     if "roi_saved" not in st.session_state:
         st.session_state.roi_saved = False
     if "transform_specs" not in st.session_state:
-        st.session_state.transform_specs = []  # lista de specs personalizados
+        st.session_state.transform_specs = []
 
 ensure_ss()
 
@@ -111,7 +112,7 @@ except Exception:
     HAS_CROPPER = False
 
 with tab2:
-    st.subheader("Definir ROI (Región de Interés)")
+    st.subheader("Definir ROI")
     img = st.session_state.current_image
     if img is None:
         st.info("Sube una imagen en el sidebar.")
@@ -205,10 +206,11 @@ with tab2:
                         st.error(f"Error al guardar ROI: {str(e)}")
 
 # ----------------------------
-# Tab 3: Detección ROI (elige predefinidas o personalizadas)
+# Tab 3: Detección ROI (solo BFMatcher)
 # ----------------------------
 with tab3:
     st.subheader("Detección de ROI")
+
     if st.session_state.current_image is None:
         st.info("Sube una imagen en el sidebar.")
     elif st.session_state.roi_data is None:
@@ -242,21 +244,26 @@ with tab3:
                 def_c = st.checkbox("Deformación cojín", value=True)
         else:
             if len(st.session_state.transform_specs) == 0:
-                st.warning("No hay transformaciones personalizadas. Ve a la pestaña 'Transformaciones personalizadas' para definirlas.")
+                st.warning("No hay transformaciones personalizadas definidas.")
             else:
                 st.success(f"Usando {len(st.session_state.transform_specs)} transformaciones personalizadas.")
 
         st.markdown("---")
         st.markdown("Parámetros de detección")
-        modo = st.selectbox("Modo de detección", options=["rigido", "deformacion"])
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            min_matches = st.slider("Mínimo de coincidencias", 4, 40, 10 if modo == "rigido" else 8, 1)
-        with col2:
-            ransac = st.slider("Umbral RANSAC (px)", 1, 15, 5 if modo == "rigido" else 8, 1)
-        with col3:
-            ratio = st.slider("Ratio test", 0.55, 0.95, 0.70 if modo == "rigido" else 0.80, 0.01)
 
+        # --- Emparejador ---
+        matcher = st.selectbox("Emparejador", ["BF (crossCheck)", "KNN (ratio test)"], index=0)
+        ratio = None
+        if matcher == "KNN (ratio test)":
+            ratio = st.slider("Ratio test (Lowe)", 0.55, 0.95, 0.75, 0.01)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            min_matches = st.slider("Mínimo de coincidencias", 3, 40, 5, 1)
+        with col2:
+            ransac = st.slider("Umbral RANSAC (px)", 1, 15, 5, 1)
+
+        topN = st.slider("Top N líneas de matches a dibujar", 5, 300, 20, 5)
         run = st.button("Ejecutar detección", type="primary")
 
         if run:
@@ -280,7 +287,6 @@ with tab3:
                     if def_b: todo.append(("deformacion_barril", deform_barrel(base, 0.00001)))
                     if def_c: todo.append(("deformacion_cojin", deform_pincushion(base, -0.00001)))
                 else:
-                    # aplicar specs personalizados
                     for i, spec in enumerate(st.session_state.transform_specs):
                         try:
                             name, img_t = apply_transform_spec(base, spec)
@@ -293,8 +299,6 @@ with tab3:
                 else:
                     results = []
                     imgs_out = []
-                    prefer_affine = (modo == "deformacion")
-                    crosscheck = (modo == "deformacion")
 
                     progress_bar = st.progress(0)
                     status_text = st.empty()
@@ -303,33 +307,40 @@ with tab3:
                         status_text.text(f"Procesando: {name}...")
                         gray_t = to_gray(img_t)
                         kp_t, des_t = sift.detectAndCompute(gray_t, None)
+
                         status = "NO DETECTADA"
                         good_n = 0
                         inliers = 0
                         kind = None
-                        vis = img_t.copy()
 
                         if des_t is not None and len(kp_t) > 1:
-                            good = match_flann(des_roi, des_t, ratio=ratio, crosscheck=crosscheck)
-                            good_n = len(good)
+                            if matcher == "BF (crossCheck)":
+                                matches = match_bf_crosscheck(des_roi, des_t)
+                            else:
+                                matches = match_knn_ratio(des_roi, des_t, ratio=ratio)
+
+                            good_n = len(matches)
+
                             if good_n >= min_matches:
-                                M, mask, inl, kind = estimate_geom(kp_roi, kp_t, good, ransac_thresh=ransac, prefer_affine=prefer_affine)
+                                M, mask, inl, kind = estimate_geom(kp_roi, kp_t, matches, ransac_thresh=ransac)
                                 inliers = inl
                                 if M is not None and inliers >= 4:
                                     poly = project_box(M, kind, roi_gray.shape[:2])
                                     if is_valid_quad(poly, img_t.shape):
-                                        cv.polylines(vis, [poly.reshape(-1, 1, 2)], True, (0, 0, 255), 3, cv.LINE_AA)
-                                        cv.putText(vis, f"ROI DETECTADA ({kind}, good={good_n}, inliers={inliers})",
-                                                   (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2, cv.LINE_AA)
                                         status = "DETECTADA"
+                                        vis = draw_matches_panel(roi, img_t, kp_roi, kp_t, matches, topN=topN, poly_right=poly)
                                     else:
-                                        vis = draw_text(vis, "Homografia/Afin invalida", (10, 30), (0, 165, 255))
+                                        vis = draw_matches_panel(roi, img_t, kp_roi, kp_t, matches, topN=topN,
+                                                                 banner=("Homografia/Afin invalida", (0,165,255)))
                                 else:
-                                    vis = draw_text(vis, "Homografia/Afin no estimable", (10, 30), (0, 0, 255))
+                                    vis = draw_matches_panel(roi, img_t, kp_roi, kp_t, matches, topN=topN,
+                                                             banner=("Homografia/Afin no estimable", (0,0,255)))
                             else:
-                                vis = draw_text(vis, f"Pocas coincidencias ({good_n})", (10, 30), (0, 0, 255))
+                                vis = draw_matches_panel(roi, img_t, kp_roi, kp_t, matches, topN=topN,
+                                                         banner=(f"Pocas coincidencias ({good_n})", (0,0,255)))
                         else:
-                            vis = draw_text(vis, "Sin keypoints en imagen", (10, 30), (0, 0, 255))
+                            vis = draw_matches_panel(roi, img_t, [], [], [], topN=0,
+                                                     banner=("Sin keypoints en imagen", (0,0,255)))
 
                         results.append(dict(nombre=name, status=status, good=good_n, inliers=inliers, modelo=kind or "-"))
                         imgs_out.append((name, vis))
@@ -339,12 +350,10 @@ with tab3:
                     progress_bar.empty()
 
                     st.markdown("---")
-                    st.markdown("Resultados visuales")
+                    st.markdown("Resultados visuales (ROI a la izquierda, imagen transformada a la derecha)")
                     for name, vis in imgs_out:
                         st.image(bgr_to_rgb(vis), caption=name, use_container_width=True)
 
-                    st.markdown("---")
-                    st.markdown("Resumen de detecciones")
                     df = pd.DataFrame(results)
                     st.dataframe(df, use_container_width=True)
 

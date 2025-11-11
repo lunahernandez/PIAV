@@ -115,23 +115,6 @@ def extract_sift(gray, params):
     sift = create_sift(params)
     return sift.detectAndCompute(gray, None), sift
 
-def match_flann(des_q, des_t, ratio=0.7, crosscheck=False):
-    if des_q is None or des_t is None or len(des_q) == 0 or len(des_t) == 0:
-        return []
-    flann = cv.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=64))
-    knn = flann.knnMatch(des_q.astype(np.float32), des_t.astype(np.float32), k=2)
-    good = []
-    for pair in knn:
-        if len(pair) == 2:
-            m, n = pair
-            if m.distance < ratio * n.distance:
-                good.append(m)
-    if crosscheck and good:
-        flann_back = cv.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=64))
-        knn_back = flann_back.knnMatch(des_t.astype(np.float32), des_q.astype(np.float32), k=2)
-        back = {m[0].queryIdx: m[0].trainIdx for m in knn_back if len(m) == 1}
-        good = [m for m in good if back.get(m.trainIdx, -1) == m.queryIdx]
-    return good
 
 def estimate_geom(kp_q, kp_t, good, ransac_thresh=5.0, prefer_affine=False):
     if len(good) < 4:
@@ -188,14 +171,6 @@ def is_valid_quad(poly, img_shape, min_area_ratio=1e-4, max_area_ratio=0.95):
 # ----------------------------
 # Motor de transformaciones personalizadas
 # ----------------------------
-def make_canvas_centered(img, scale_factor=2):
-    """Devuelve un canvas blanco (CH,CW,3) y el offset (ox,oy) para situar la imagen centrada."""
-    h, w = img.shape[:2]
-    CW, CH = int(w * scale_factor), int(h * scale_factor)
-    canvas = np.full((CH, CW, 3), 255, dtype=np.uint8)
-    ox, oy = (CW - w) // 2, (CH - h) // 2
-    canvas[oy:oy+h, ox:ox+w] = img
-    return canvas, (ox, oy), (CW, CH)
 
 def affine_matrix_with_pivot(angle_deg, sx, sy, cx, cy, tx, ty):
     """Construye M 2x3 tal que x' = A x + b, con pivote (cx,cy) y traslación (tx,ty)."""
@@ -282,3 +257,67 @@ def apply_transform_spec(base_img, spec):
         return name, out
     else:
         raise ValueError(f"Tipo de transformación no soportado: {t}")
+
+import cv2 as cv
+import numpy as np
+
+def match_bf_crosscheck(des1, des2):
+    bf = cv.BFMatcher(cv.NORM_L2, crossCheck=True)
+    matches = bf.match(des1, des2)
+    return sorted(matches, key=lambda x: x.distance)
+
+def match_knn_ratio(des1, des2, ratio=0.75, k=2):
+    """
+    Empareja con KNN y aplica el ratio test de Lowe.
+    Devuelve una lista plana de DMatch (solo el mejor por par filtrado).
+    """
+    bf = cv.BFMatcher(cv.NORM_L2, crossCheck=False)
+    knn = bf.knnMatch(des1, des2, k=k)
+    good = []
+    for pair in knn:
+        if len(pair) < 2:
+            continue
+        m, n = pair[0], pair[1]
+        if m.distance < ratio * n.distance:
+            good.append(m)
+    # ordenar por distancia, igual que en BF clásico
+    return sorted(good, key=lambda x: x.distance)
+
+
+
+def draw_matches_panel(img_left, img_right, kp_left, kp_right, matches, topN=100, poly_right=None, banner=None):
+    left = cv.cvtColor(img_left, cv.COLOR_GRAY2BGR) if img_left.ndim == 2 else img_left.copy()
+    right = cv.cvtColor(img_right, cv.COLOR_GRAY2BGR) if img_right.ndim == 2 else img_right.copy()
+
+    h = max(left.shape[0], right.shape[0])
+    left_p = cv.copyMakeBorder(left, 0, h-left.shape[0], 0, 0, cv.BORDER_CONSTANT, value=(0,0,0))
+    right_p = cv.copyMakeBorder(right, 0, h-right.shape[0], 0, 0, cv.BORDER_CONSTANT, value=(0,0,0))
+    vis = cv.hconcat([left_p, right_p])
+
+    offset = left_p.shape[1]
+    n = min(topN, len(matches))
+    for m in matches[:n]:
+        pt1 = tuple(np.int32(kp_left[m.queryIdx].pt))
+        pt2 = tuple(np.int32(kp_right[m.trainIdx].pt))
+        pt2_shift = (pt2[0] + offset, pt2[1])
+        color = tuple(int(c) for c in np.random.randint(60, 255, 3))
+        cv.circle(vis, pt1, 3, color, -1, cv.LINE_AA)
+        cv.circle(vis, pt2_shift, 3, color, -1, cv.LINE_AA)
+        cv.line(vis, pt1, pt2_shift, color, 1, cv.LINE_AA)
+
+    if poly_right is not None and poly_right.size == 8:
+        poly = poly_right.reshape(-1, 2).astype(int)
+        poly[:, 0] += offset
+        cv.polylines(vis, [poly.reshape(-1,1,2)], True, (0,0,255), 3, cv.LINE_AA)
+
+    if banner is not None:
+        txt, col = banner
+        cv.putText(vis, txt, (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.9, col, 2, cv.LINE_AA)
+
+    return vis
+
+def to_gray(img):
+    return cv.cvtColor(img, cv.COLOR_BGR2GRAY) if img.ndim == 3 else img
+
+def bgr_to_rgb(img):
+    return img[:, :, ::-1] if img.ndim == 3 else img
