@@ -9,12 +9,17 @@ import cv2 as cv
 
 from utils import (
     DEFAULT_SIFT,
-    file_to_bgr, bgr_to_rgb, to_gray, norm_int,
+    file_to_bgr, bgr_to_rgb, to_gray, draw_text, norm_int,
     rotate_image, scale_image, translate_image, perspective_transform,
     deform_barrel, deform_pincushion,
-    extract_sift, estimate_geom, project_box, is_valid_quad,
-    warp_affine_on_canvas, apply_transform_spec, match_bf_crosscheck,
-    draw_matches_panel, to_gray, bgr_to_rgb, match_knn_ratio
+    extract_sift, match_flann, estimate_geom, project_box, is_valid_quad,
+    make_canvas_centered, warp_affine_on_canvas, apply_transform_spec, match_bf_crosscheck,
+    draw_matches_panel, to_gray, bgr_to_rgb, match_knn_ratio,
+    affine_matrix_RS,          # NUEVA
+    affine_update_t_for_pivot, # NUEVA
+    affine_build_2x3,          # NUEVA
+    affine_preview_on_canvas,
+    apply_distortion_full
 )
 
 # ----------------------------
@@ -30,7 +35,7 @@ def ensure_ss():
     if "roi_saved" not in st.session_state:
         st.session_state.roi_saved = False
     if "transform_specs" not in st.session_state:
-        st.session_state.transform_specs = []
+        st.session_state.transform_specs = []  # lista de specs personalizados
 
 ensure_ss()
 
@@ -112,7 +117,7 @@ except Exception:
     HAS_CROPPER = False
 
 with tab2:
-    st.subheader("Definir ROI")
+    st.subheader("Definir ROI (Región de Interés)")
     img = st.session_state.current_image
     if img is None:
         st.info("Sube una imagen en el sidebar.")
@@ -378,6 +383,23 @@ with tab3:
 # ----------------------------
 # Tab 4: Transformaciones personalizadas
 # ----------------------------
+# ----------------------------
+# Tab 4: Transformaciones personalizadas
+# ----------------------------
+from utils import (
+    make_canvas_centered,
+    affine_matrix_RS,
+    affine_update_t_for_pivot,
+    affine_build_2x3,
+    affine_preview_on_canvas,
+    apply_distortion_full,
+    bgr_to_rgb,
+)
+import numpy as np
+import pandas as pd
+import cv2 as cv
+import streamlit as st
+
 with tab4:
     st.subheader("Diseñador de transformaciones")
     if st.session_state.current_image is None:
@@ -392,37 +414,95 @@ with tab4:
             horizontal=True
         )
 
+        # =====================================================================
+        # --------------------------- AFIN -----------------------------------
+        # =====================================================================
         if "Afin" in mode:
-            st.markdown("Parámetros de afin con pivote sobre un lienzo ampliado")
+            st.markdown("Parámetros de afin con pivote y compensación exacta (b = t + (I - A)·c)")
+
             col = st.columns(3)
             with col[0]:
-                sf = st.slider("Factor lienzo", 1.2, 4.0, 2.0, 0.1, help="Tamaño del lienzo respecto a la imagen.")
+                sf = st.slider("Factor lienzo", 1.2, 4.0, 2.0, 0.1)
                 ang = st.slider("Ángulo (°)", 0, 360, 0, 1)
                 sx = st.slider("Escala X", 0.10, 3.00, 1.00, 0.01)
-                uniform = st.checkbox("Escalado uniforme", value=True)
+                uniform = st.checkbox("Escalado uniforme", value=False)
             with col[1]:
                 if uniform:
                     sy = sx
                     st.write(f"Escala Y = {sy:.2f} (uniforme)")
                 else:
                     sy = st.slider("Escala Y", 0.10, 3.00, 1.00, 0.01)
-                tx = st.slider("Tx (px)", -int(w*sf), int(w*sf), 0, 1)
-                ty = st.slider("Ty (px)", -int(h*sf), int(h*sf), 0, 1)
+
+                CW, CH = int(w * sf), int(h * sf)
+
+                # --- Estado inicial si no existe ---
+                if "tab4_t" not in st.session_state:
+                    st.session_state.tab4_t = np.array([0.0, 0.0], np.float32)
+                if "tab4_prev_c" not in st.session_state:
+                    st.session_state.tab4_prev_c = np.array([CW // 2, CH // 2], np.float32)
+
+                t_state = st.session_state.tab4_t.astype(np.float32)
+                prev_c = st.session_state.tab4_prev_c.astype(np.float32)
             with col[2]:
-                cx = st.slider("Centro Cx (px lienzo)", 0, int(w*sf), int((w*sf)/2), 1)
-                cy = st.slider("Centro Cy (px lienzo)", 0, int(h*sf), int((h*sf)/2), 1)
+                cx_ui = st.slider("Centro Cx (px lienzo)", 0, CW, CW // 2, 1)
+                cy_ui = st.slider("Centro Cy (px lienzo)", 0, CH, CH // 2, 1)
                 name = st.text_input("Nombre", value=f"affine_{ang}deg")
 
-            # Vista previa
-            out, view, _ = warp_affine_on_canvas(img, sf, tx, ty, ang, cx, cy, sx, sy)
-            st.image(bgr_to_rgb(view), caption="Vista previa (recorte central)", use_container_width=True)
+            # --- Matriz A y centro actual ---
+            A, I = affine_matrix_RS(angle_deg=float(ang), sx=float(sx), sy=float(sy))
+            c_now = np.array([float(cx_ui), float(cy_ui)], np.float32)
 
+            # --- Compensar cambio de pivote antes de crear sliders ---
+            if not np.allclose(c_now, prev_c):
+                t_state = affine_update_t_for_pivot(t_state, prev_c, c_now, A, I)
+                st.session_state.tab4_t = t_state.copy()
+                st.session_state.tab4_prev_c = c_now.copy()
+
+            # --- Sliders de traslación (sin key para evitar conflictos) ---
+            tx_ui = st.slider(
+                "Tx (px lienzo)",
+                -CW // 2, CW // 2,
+                value=int(round(t_state[0])),
+                step=1
+            )
+            ty_ui = st.slider(
+                "Ty (px lienzo)",
+                -CH // 2, CH // 2,
+                value=int(round(t_state[1])),
+                step=1
+            )
+
+            # --- Si el usuario mueve los sliders, actualizar t_state ---
+            if (tx_ui != int(round(t_state[0]))) or (ty_ui != int(round(t_state[1]))):
+                t_state = np.array([float(tx_ui), float(ty_ui)], np.float32)
+                st.session_state.tab4_t = t_state.copy()
+
+            # --- Construcción de la matriz completa ---
+            M, b = affine_build_2x3(A=A, t=t_state, c=c_now, I=I)
+
+            # --- Vista previa ---
+            view, pc, CW, CH, ox, oy = affine_preview_on_canvas(
+                img=img, scale_factor=sf, M=M, A=A, b=b, c_now=c_now
+            )
+
+            # Dibujar pivote en la vista
+            disp = view.copy()
+            cv.circle(disp, (int(pc[0]-ox), int(pc[1]-oy)), 6, (0,0,255), -1)
+            cv.putText(disp, f"C=({int(cx_ui)},{int(cy_ui)})",
+                       (int(pc[0]-ox)+10, int(pc[1]-oy)-10),
+                       cv.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+
+            st.image(bgr_to_rgb(disp), caption="Vista previa (recorte central)", use_container_width=True)
+
+            # --- Botones ---
             c1, c2 = st.columns(2)
             with c1:
                 if st.button("Añadir a lista"):
                     st.session_state.transform_specs.append(dict(
-                        type="affine", name=name, scale_factor=sf, tx=tx, ty=ty,
-                        angle=ang, cx=cx, cy=cy, sx=sx, sy=sy
+                        type="affine", name=name, scale_factor=float(sf),
+                        tx=float(t_state[0]), ty=float(t_state[1]),
+                        angle=float(ang), cx=float(c_now[0]), cy=float(c_now[1]),
+                        sx=float(sx), sy=float(sy)
                     ))
                     st.success("Transformación añadida")
             with c2:
@@ -430,6 +510,9 @@ with tab4:
                     st.session_state.transform_specs = []
                     st.info("Lista vaciada")
 
+        # =====================================================================
+        # ------------------------- DISTORSIÓN -------------------------------
+        # =====================================================================
         else:
             st.markdown("Parámetros de distorsión radial/tangencial")
             col = st.columns(3)
@@ -450,8 +533,6 @@ with tab4:
             else:
                 center = None
 
-            # Vista previa
-            from utils import apply_distortion_full
             prev = apply_distortion_full(img, k1, k2, p1, p2, k3, center=center, focal=focal)
             st.image(bgr_to_rgb(prev), caption="Vista previa distorsión", use_container_width=True)
 
@@ -469,6 +550,9 @@ with tab4:
                     st.session_state.transform_specs = []
                     st.info("Lista vaciada")
 
+        # =====================================================================
+        # --------------------------- LISTA ----------------------------------
+        # =====================================================================
         st.markdown("---")
         st.markdown("Transformaciones en la lista")
         if len(st.session_state.transform_specs) == 0:
@@ -476,7 +560,6 @@ with tab4:
         else:
             df = pd.DataFrame(st.session_state.transform_specs)
             st.dataframe(df, use_container_width=True)
-            # Controles de borrado individual
             for i, spec in enumerate(st.session_state.transform_specs):
                 c1, c2 = st.columns([8, 1])
                 with c1:
