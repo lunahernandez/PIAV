@@ -40,29 +40,6 @@ def main():
         sobel1 = cv.Sobel(gray1, cv.CV_64F, 0, 1, ksize=5)
         sobel2 = cv.Sobel(gray2, cv.CV_64F, 0, 1, ksize=5)
 
-        # Mostrar resultados con originales y realce de crestas
-        plt.figure(figsize=(10, 5))
-        plt.subplot(2, 2, 1)
-        plt.title('Imagen 1 Original')
-        plt.imshow(gray1, cmap='gray')
-        plt.axis('off')
-        plt.subplot(2, 2, 2)
-        plt.title('Imagen 2 Original')
-        plt.imshow(gray2, cmap='gray')
-        plt.axis('off')
-
-        plt.subplot(2, 2, 3)
-        plt.title('Imagen 1 Realce Sobel')
-        plt.imshow(sobel1, cmap='gray')
-        plt.axis('off')
-
-        plt.subplot(2, 2, 4)
-        plt.title('Imagen 2 Realce Sobel')
-        plt.imshow(sobel2, cmap='gray')
-        plt.axis('off')
-        plt.tight_layout()
-        plt.show()
-
         # Guardar las imágenes procesadas
         out_folder = os.path.join(folder_path, "sobel")
         os.makedirs(out_folder, exist_ok=True)

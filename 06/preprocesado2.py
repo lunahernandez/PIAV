@@ -28,7 +28,7 @@ def main():
             print(f"No hay suficientes imágenes en {roi_path}")
             continue
 
-        # ✅ Corregido: leer desde roi_path
+        # Corregido: leer desde roi_path
         img1_path = os.path.join(roi_path, image_files[0])
         img2_path = os.path.join(roi_path, image_files[1])
 
@@ -42,29 +42,6 @@ def main():
         # Ecualizar el histograma
         eq1 = cv.equalizeHist(gray1)
         eq2 = cv.equalizeHist(gray2)
-
-        # Mostrar resultados
-        plt.figure(figsize=(10, 5))
-        plt.subplot(2, 2, 1)
-        plt.title('Imagen 1 Original')
-        plt.imshow(gray1, cmap='gray')
-        plt.axis('off')
-        plt.subplot(2, 2, 2)
-        plt.title('Imagen 2 Original')
-        plt.imshow(gray2, cmap='gray')
-        plt.axis('off')
-
-        plt.subplot(2, 2, 3)
-        plt.title('Imagen 1 Ecualizada')
-        plt.imshow(eq1, cmap='gray')
-        plt.axis('off')
-        plt.subplot(2, 2, 4)
-        plt.title('Imagen 2 Ecualizada')
-        plt.imshow(eq2, cmap='gray')
-        plt.axis('off')
-
-        plt.tight_layout()
-        plt.show()
 
         # Guardar resultados
         out_folder = os.path.join(folder_path, "ecualizadas")

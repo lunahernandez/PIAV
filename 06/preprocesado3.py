@@ -40,30 +40,6 @@ def main():
         bilateral1 = cv.bilateralFilter(gray1, d=10, sigmaColor=7, sigmaSpace=11)
         bilateral2 = cv.bilateralFilter(gray2, d=10, sigmaColor=7, sigmaSpace=11)
 
-        # Mostrar resultados con originales y filtradas
-        plt.figure(figsize=(10, 5))
-        plt.subplot(2, 2, 1)
-        plt.title('Imagen 1 Original')
-        plt.imshow(gray1, cmap='gray')
-        plt.axis('off')
-        plt.subplot(2, 2, 2)
-        plt.title('Imagen 2 Original')
-        plt.imshow(gray2, cmap='gray')
-        plt.axis('off')
-
-        plt.subplot(2, 2, 3)
-        plt.title('Imagen 1 Filtrada Bilateral')
-        plt.imshow(bilateral1, cmap='gray')
-        plt.axis('off')
-
-        plt.subplot(2, 2, 4)
-        plt.title('Imagen 2 Filtrada Bilateral')
-        plt.imshow(bilateral2, cmap='gray')
-        plt.axis('off')
-
-        plt.tight_layout()
-        plt.show()
-
         # Guardar resultados
         out_folder = os.path.join(folder_path, "filtradas_bilateral")
         os.makedirs(out_folder, exist_ok=True)
