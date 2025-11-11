@@ -321,3 +321,67 @@ def to_gray(img):
 
 def bgr_to_rgb(img):
     return img[:, :, ::-1] if img.ndim == 3 else img
+
+import cv2 as cv
+import numpy as np
+
+# --- Matrices A = R @ S y la identidad I ---
+def affine_matrix_RS(angle_deg: float, sx: float, sy: float):
+    """Devuelve (A, I) con A = R(ang) @ S(sx,sy)."""
+    rad = np.deg2rad(angle_deg)
+    c, s = np.cos(rad), np.sin(rad)
+    R = np.array([[ c, -s],
+                  [ s,  c]], dtype=np.float32)
+    S = np.array([[sx, 0.0],
+                  [0.0, sy]], dtype=np.float32)
+    A = (R @ S).astype(np.float32)
+    I = np.eye(2, dtype=np.float32)
+    return A, I
+
+def affine_update_t_for_pivot(t_state: np.ndarray, prev_c: np.ndarray, c_now: np.ndarray, A: np.ndarray, I: np.ndarray):
+    """
+    Mantiene constante b = t + (I - A)·c al cambiar c:  t' = b_keep - (I - A)·c_now
+    donde b_keep = t_state + (I - A)·prev_c
+    """
+    b_keep = t_state + (I - A) @ prev_c
+    t_new  = b_keep - (I - A) @ c_now
+    return t_new.astype(np.float32)
+
+def affine_build_2x3(A: np.ndarray, t: np.ndarray, c: np.ndarray, I: np.ndarray):
+    """Devuelve (M 2x3, b) con x' = A x + b,  b = t + (I - A)·c."""
+    b = (t + (I - A) @ c).astype(np.float32)
+    M = np.hstack([A, b.reshape(2,1)])
+    return M, b
+
+def affine_preview_on_canvas(img: np.ndarray, scale_factor: float, M: np.ndarray, A: np.ndarray, b: np.ndarray, c_now: np.ndarray):
+    """
+    Aplica warp sobre un lienzo centrado y devuelve:
+      - view: recorte central del tamaño original
+      - pc: pivote transformado (A·c + b)
+      - CW, CH, ox, oy: datos del lienzo/offset
+    """
+    h, w = img.shape[:2]
+    CW, CH = int(w*scale_factor), int(h*scale_factor)
+    canvas = np.full((CH, CW, 3), 255, dtype=np.uint8)
+    ox, oy = (CW - w)//2, (CH - h)//2
+    canvas[oy:oy+h, ox:ox+w] = img
+
+    out = cv.warpAffine(canvas, M, (CW, CH), borderValue=(255,255,255))
+    pc  = (A @ c_now + b).astype(int)
+
+    # Marcador del pivote (opcional, el app dibuja sobre view si quiere)
+    disp = out  # si quieres dibujar aquí, haz una copia: out.copy()
+
+    view = disp[oy:oy+h, ox:ox+w].copy()
+    return view, pc, CW, CH, ox, oy
+
+
+def make_canvas_centered(img, scale_factor=2): 
+    """Devuelve un canvas blanco (CH,CW,3) y el offset (ox,oy) para situar la imagen centrada.""" 
+    h, w = img.shape[:2] 
+    CW, CH = int(w * scale_factor), int(h * scale_factor) 
+    canvas = np.full((CH, CW, 3), 255, dtype=np.uint8) 
+    ox, oy = (CW - w) // 2, (CH - h) // 2 
+    canvas[oy:oy+h, ox:ox+w] = img 
+    return canvas, (ox, oy), (CW, CH)
+
