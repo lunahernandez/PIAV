@@ -364,9 +364,6 @@ with tab3:
 # ----------------------------
 # Tab 4: Transformaciones personalizadas
 # ----------------------------
-# ----------------------------
-# Tab 4: Transformaciones personalizadas
-# ----------------------------
 from utils import (
     make_canvas_centered,
     affine_matrix_RS,
@@ -536,16 +533,24 @@ with tab4:
         # =====================================================================
         st.markdown("---")
         st.markdown("Transformaciones en la lista")
-        if len(st.session_state.transform_specs) == 0:
+
+        specs = st.session_state.transform_specs
+        if len(specs) == 0:
             st.info("No hay transformaciones añadidas.")
         else:
-            df = pd.DataFrame(st.session_state.transform_specs)
+            df = pd.DataFrame(specs)
             st.dataframe(df, use_container_width=True)
-            for i, spec in enumerate(st.session_state.transform_specs):
+
+            # Botones de borrado robustos
+            to_delete = None
+            for i, spec in enumerate(specs):
                 c1, c2 = st.columns([8, 1])
                 with c1:
                     st.code(str(spec))
                 with c2:
                     if st.button("Eliminar", key=f"del_{i}"):
-                        st.session_state.transform_specs.pop(i)
-                        st.experimental_rerun()
+                        to_delete = i
+
+            if to_delete is not None:
+                st.session_state.transform_specs.pop(to_delete)
+                st.rerun()  # <-- reemplaza experimental_rerun por rerun
