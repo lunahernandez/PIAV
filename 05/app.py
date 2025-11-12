@@ -1,228 +1,56 @@
 # app.py
 import io
 import zipfile
-
-import cv2 as cv
 import numpy as np
+import pandas as pd
 from PIL import Image
 import streamlit as st
+import cv2 as cv
 
-DEFAULT_SIFT = dict(
-    nfeatures=1000,
-    nOctaveLayers=3,
-    contrastThreshold=0.04,
-    edgeThreshold=10.0,
-    sigma=1.6,
+from utils import (
+    DEFAULT_SIFT,
+    file_to_bgr, bgr_to_rgb, to_gray,
+    rotate_image, scale_image, translate_image,
+    deform_barrel, deform_pincushion,
+    extract_sift, estimate_geom, project_box, is_valid_quad,
+    apply_transform_spec, match_bf_crosscheck, match_knn_ratio,
+    draw_matches_panel,
+    affine_matrix_RS, affine_update_t_for_pivot, affine_build_2x3, affine_preview_on_canvas,
+    apply_distortion_full
 )
 
+
+
+# ----------------------------
+# Estado de sesión (solo UI)
+# ----------------------------
 def ensure_ss():
     if "current_image" not in st.session_state:
-        st.session_state.current_image = None   # np.ndarray (BGR)
+        st.session_state.current_image = None
     if "sift" not in st.session_state:
         st.session_state.sift = DEFAULT_SIFT.copy()
     if "roi_data" not in st.session_state:
-        st.session_state.roi_data = None  # {"image": roi_bgr, "bbox": (x,y,w,h)}
+        st.session_state.roi_data = None
     if "roi_saved" not in st.session_state:
         st.session_state.roi_saved = False
+    if "transform_specs" not in st.session_state:
+        st.session_state.transform_specs = []  # lista de specs personalizados
 
 ensure_ss()
-
-# ----------------------------
-# Utilidades de imagen
-# ----------------------------
-def file_to_bgr(uploaded):
-    image = Image.open(uploaded).convert("RGB")
-    arr = np.array(image)[:, :, ::-1]  # RGB->BGR
-    return arr
-
-def bgr_to_rgb(img):
-    return cv.cvtColor(img, cv.COLOR_BGR2RGB)
-
-def to_gray(img_bgr):
-    return cv.cvtColor(img_bgr, cv.COLOR_BGR2GRAY)
-
-def draw_text(img, text, org=(10, 30), color=(0, 255, 0)):
-    vis = img.copy()
-    cv.putText(vis, text, org, cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 3, cv.LINE_AA)
-    cv.putText(vis, text, org, cv.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv.LINE_AA)
-    return vis
-
-def norm_int(v, lo, hi):
-    return max(lo, min(hi, v))
-
-# ----------------------------
-# Transformaciones (C y D)
-# ----------------------------
-def rotate_image(img, angle):
-    h, w = img.shape[:2]
-    center = (w // 2, h // 2)
-    M = cv.getRotationMatrix2D(center, angle, 1.0)
-    cos, sin = abs(M[0, 0]), abs(M[0, 1])
-    new_w, new_h = int((h * sin) + (w * cos)), int((h * cos) + (w * sin))
-    M[0, 2] += (new_w / 2) - center[0]
-    M[1, 2] += (new_h / 2) - center[1]
-    return cv.warpAffine(img, M, (new_w, new_h), borderValue=(255, 255, 255))
-
-def scale_image(img, scale):
-    h, w = img.shape[:2]
-    scaled = cv.resize(img, None, fx=scale, fy=scale, interpolation=cv.INTER_LINEAR)
-    if scale > 1.0:
-        new_h, new_w = scaled.shape[:2]
-        y0, x0 = (new_h - h) // 2, (new_w - w) // 2
-        return scaled[y0:y0+h, x0:x0+w]
-    else:
-        new_h, new_w = scaled.shape[:2]
-        result = np.full((h, w, 3), 255, dtype=np.uint8)
-        y0, x0 = (h - new_h) // 2, (w - new_w) // 2
-        result[y0:y0+new_h, x0:x0+new_w] = scaled
-        return result
-
-def translate_image(img, tx, ty):
-    h, w = img.shape[:2]
-    M = np.float32([[1, 0, tx], [0, 1, ty]])
-    return cv.warpAffine(img, M, (w, h), borderValue=(255, 255, 255))
-
-def perspective_transform(img, intensity="leve"):
-    h, w = img.shape[:2]
-    pts1 = np.float32([[0, 0], [w-1, 0], [0, h-1], [w-1, h-1]])
-    base_offset = min(w, h) // 20
-    factor = {"leve": 1, "moderada": 2, "fuerte": 3}.get(intensity, 1)
-    offset = base_offset * factor
-    pts2 = np.float32([
-        [offset, offset//2],
-        [w - offset*2, offset],
-        [offset//2, h - offset],
-        [w - offset, h - offset//2]
-    ])
-    M = cv.getPerspectiveTransform(pts1, pts2)
-    return cv.warpPerspective(img, M, (w, h), borderValue=(255, 255, 255))
-
-def deform_radial(img, k=0.00001):
-    h, w = img.shape[:2]
-    fx = fy = 1.0
-    cx, cy = w / 2, h / 2
-    K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
-    D = np.array([k, 0, 0, 0])
-    map1, map2 = cv.initUndistortRectifyMap(K, D, None, K, (w, h), cv.CV_32FC1)
-    return cv.remap(img, map1, map2, interpolation=cv.INTER_LINEAR, borderValue=(255, 255, 255))
-
-def deform_barrel(img, k=0.00001):
-    return deform_radial(img, k=k)
-
-def deform_pincushion(img, k=-0.00001):
-    return deform_radial(img, k=k)
-
-# ----------------------------
-# SIFT y matching
-# ----------------------------
-def create_sift(params):
-    return cv.SIFT_create(
-        nfeatures=int(params["nfeatures"]),
-        nOctaveLayers=int(params["nOctaveLayers"]),
-        contrastThreshold=float(params["contrastThreshold"]),
-        edgeThreshold=float(params["edgeThreshold"]),
-        sigma=float(params["sigma"]),
-    )
-
-def extract_sift(gray, params):
-    sift = create_sift(params)
-    return sift.detectAndCompute(gray, None), sift
-
-def match_flann(des_q, des_t, ratio=0.7, crosscheck=False):
-    if des_q is None or des_t is None or len(des_q) == 0 or len(des_t) == 0:
-        return []
-    flann = cv.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=64))
-    knn = flann.knnMatch(des_q.astype(np.float32), des_t.astype(np.float32), k=2)
-    good = []
-    for pair in knn:
-        if len(pair) == 2:
-            m, n = pair
-            if m.distance < ratio * n.distance:
-                good.append(m)
-    if crosscheck and good:
-        flann_back = cv.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=64))
-        knn_back = flann_back.knnMatch(des_t.astype(np.float32), des_q.astype(np.float32), k=2)
-        back = {m[0].queryIdx: m[0].trainIdx for m in knn_back if len(m) == 1}
-        good = [m for m in good if back.get(m.trainIdx, -1) == m.queryIdx]
-    return good
-
-def estimate_geom(kp_q, kp_t, good, ransac_thresh=5.0, prefer_affine=False):
-    if len(good) < 4:
-        return None, None, 0, None
-    src = np.float32([kp_q[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-    dst = np.float32([kp_t[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-
-    A, maskA = None, None
-    inliers_aff = -1
-    if prefer_affine:
-        A, maskA = cv.estimateAffinePartial2D(src, dst, method=cv.RANSAC, ransacReprojThreshold=ransac_thresh)
-        inliers_aff = int(maskA.sum()) if maskA is not None else -1
-
-    H, maskH = cv.findHomography(src, dst, cv.RANSAC, ransac_thresh)
-    inliers_H = int(maskH.sum()) if maskH is not None else -1
-
-    use_aff = prefer_affine and inliers_aff >= max(4, inliers_H)
-    inliers = inliers_aff if use_aff else inliers_H
-    if use_aff and A is not None and inliers >= 4:
-        return A, maskA, inliers, "affine"
-    if (not use_aff) and H is not None and inliers >= 4:
-        return H, maskH, inliers, "homography"
-    return None, None, 0, None
-
-def project_box(M, model_kind, roi_shape):
-    h, w = roi_shape
-    box = np.float32([[0, 0], [w, 0], [w, h], [0, h]]).reshape(-1, 1, 2)
-    if model_kind == "homography":
-        proj = cv.perspectiveTransform(box, M).reshape(-1, 2)
-    else:
-        pts = box.reshape(-1, 2)
-        proj = cv.transform(pts[None, :, :], M)[0]
-    return proj.astype(np.int32)
-
-def is_valid_quad(poly, img_shape, min_area_ratio=1e-4, max_area_ratio=0.95):
-    if poly is None or len(poly) != 4:
-        return False
-    h, w = img_shape[:2]
-    poly_int = np.int32(poly.reshape(-1, 2))
-    if not cv.isContourConvex(poly_int):
-        return False
-    if (poly_int[:, 0].min() < -0.05 * w or poly_int[:, 0].max() > 1.05 * w or
-        poly_int[:, 1].min() < -0.05 * h or poly_int[:, 1].max() > 1.05 * h):
-        return False
-    area = cv.contourArea(poly_int)
-    area_ratio = area / float(w * h)
-    if not (min_area_ratio <= area_ratio <= max_area_ratio):
-        return False
-    lens = np.linalg.norm(np.diff(np.vstack([poly_int, poly_int[0]]), axis=0), axis=1)
-    if lens.min() < 5:
-        return False
-    return True
 
 # ----------------------------
 # Sidebar: carga y SIFT
 # ----------------------------
 st.sidebar.title("Parámetros y datos")
 
-# Uploader único
 upl = st.sidebar.file_uploader("Sube una imagen", type=["png", "jpg", "jpeg", "bmp"])
 if upl is not None:
     new_img = file_to_bgr(upl)
-    # Solo actualizar si es una imagen diferente
     if st.session_state.current_image is None or not np.array_equal(new_img, st.session_state.current_image):
         st.session_state.current_image = new_img
-        # Limpiar ROI al cargar nueva imagen
         st.session_state.roi_data = None
         st.session_state.roi_saved = False
 
-# Mostrar estado del ROI en sidebar
-if st.session_state.roi_data is not None:
-    st.sidebar.success("✅ ROI guardado")
-    bbox = st.session_state.roi_data["bbox"]
-    st.sidebar.caption(f"Tamaño: {bbox[2]}x{bbox[3]} px")
-else:
-    st.sidebar.info("ℹSin ROI guardado")
-
-# Controles SIFT
 st.sidebar.subheader("Parámetros SIFT")
 nfeatures = st.sidebar.slider("nfeatures", 0, 10000, int(st.session_state.sift["nfeatures"]), 50)
 nOctaveLayers = st.sidebar.slider("nOctaveLayers", 1, 10, int(st.session_state.sift["nOctaveLayers"]), 1)
@@ -232,7 +60,7 @@ sigma = st.sidebar.slider("sigma", 0.5, 5.0, float(st.session_state.sift["sigma"
 
 colA, colB = st.sidebar.columns(2)
 with colA:
-    if st.sidebar.button("Guardar parámetros SIFT"):
+    if st.sidebar.button("Guardar SIFT"):
         st.session_state.sift = dict(
             nfeatures=int(nfeatures),
             nOctaveLayers=int(nOctaveLayers),
@@ -242,21 +70,26 @@ with colA:
         )
         st.sidebar.success("Parámetros guardados")
 with colB:
-    if st.sidebar.button("Restaurar valores"):
+    if st.sidebar.button("Restaurar SIFT"):
         st.session_state.sift = DEFAULT_SIFT.copy()
         st.rerun()
 
 # ----------------------------
-# Tabs principales
+# Tabs
 # ----------------------------
 st.title("Detección de características SIFT")
-tab1, tab2, tab3 = st.tabs(["Características SIFT", "Seleccionar ROI", "Detectar ROI"])
+tab1, tab2, tab3, tab4 = st.tabs([
+    "Características SIFT",
+    "Seleccionar ROI",
+    "Detectar ROI",
+    "Transformaciones personalizadas"
+])
 
 # ----------------------------
-# Tab 1: Características SIFT
+# Tab 1: Características
 # ----------------------------
 with tab1:
-    st.subheader("Vista de keypoints SIFT")
+    st.subheader("Vista de Puntos Clave Detectados con SIFT")
     img = st.session_state.current_image
     if img is None:
         st.info("Sube una imagen en el sidebar.")
@@ -267,7 +100,7 @@ with tab1:
         st.image(bgr_to_rgb(vis), caption=f"Keypoints detectados: {len(kp)}", use_container_width=True)
 
 # ----------------------------
-# Tab 2: Seleccionar ROI (cropper o coordenadas)
+# Tab 2: Selección de ROI (solo arrastrar, con botón de carga)
 # ----------------------------
 try:
     from streamlit_cropper import st_cropper
@@ -276,19 +109,19 @@ except Exception:
     HAS_CROPPER = False
 
 with tab2:
-    st.subheader("Definir ROI (Región de Interés)")
+    st.subheader("Definir ROI")
     img = st.session_state.current_image
+
     if img is None:
         st.info("Sube una imagen en el sidebar.")
     else:
-        # Mostrar ROI guardada primero
+        # Panel ROI guardada
         if st.session_state.roi_data is not None:
             st.success("ROI guardada correctamente")
             col1, col2 = st.columns([2, 1])
             with col1:
                 saved_roi = st.session_state.roi_data["image"]
-                saved_bbox = st.session_state.roi_data["bbox"]
-                st.image(bgr_to_rgb(saved_roi), caption=f"ROI guardada - Posición: {saved_bbox}", use_container_width=True)
+                st.image(bgr_to_rgb(saved_roi), caption=f"ROI guardada", use_container_width=True)
             with col2:
                 st.metric("Ancho", f"{saved_roi.shape[1]} px")
                 st.metric("Alto", f"{saved_roi.shape[0]} px")
@@ -296,89 +129,65 @@ with tab2:
                     st.session_state.roi_data = None
                     st.rerun()
             st.markdown("---")
-        
-        rgb = bgr_to_rgb(img)
-        h, w = rgb.shape[:2]
-        
-        st.write("**Selecciona una región de interés en la imagen:**")
-        modo = st.radio(
-            "Modo de selección",
-            options=["Coordenadas", "Arrastrar"],
-            help="Elige cómo quieres indicar la ROI",
-            horizontal=True
-        )
 
-        if modo == "Coordenadas":
-            st.image(rgb, use_container_width=True)
-            st.write("Introduce las coordenadas del ROI:")
-            c1, c2, c3, c4 = st.columns(4)
-            with c1:
-                x = st.number_input("x", min_value=0, max_value=max(0, w-1), value=0, step=1, key="x_coord")
-            with c2:
-                y = st.number_input("y", min_value=0, max_value=max(0, h-1), value=0, step=1, key="y_coord")
-            with c3:
-                ww = st.number_input("ancho", min_value=1, max_value=w, value=min(100, w), step=1, key="w_coord")
-            with c4:
-                hh = st.number_input("alto", min_value=1, max_value=h, value=min(100, h), step=1, key="h_coord")
+        if not HAS_CROPPER:
+            st.error("Instala streamlit-cropper: pip install streamlit-cropper")
+        else:
+            rgb = bgr_to_rgb(img)
+            h, w = rgb.shape[:2]
+            pil = Image.fromarray(rgb)
 
-            if st.button("Guardar ROI", key="save_roi_coords", type="primary"):
-                try:
-                    x_int = int(norm_int(x, 0, w-1))
-                    y_int = int(norm_int(y, 0, h-1))
-                    ww_int = int(norm_int(ww, 1, w - x_int))
-                    hh_int = int(norm_int(hh, 1, h - y_int))
-                    bbox = (x_int, y_int, ww_int, hh_int)
-                    roi_img = img[y_int:y_int+hh_int, x_int:x_int+ww_int].copy()
-                    
-                    # Verificar que el ROI no esté vacío
-                    if roi_img.size == 0:
-                        st.error("El ROI está vacío. Ajusta las coordenadas.")
-                    else:
-                        st.session_state.roi_data = {"image": roi_img, "bbox": bbox}
-                        st.session_state.roi_saved = True
-                        st.success(f"ROI guardado: {bbox}")
-                        st.balloons()
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Error al guardar ROI: {str(e)}")
+            # Señal de imagen actual para reiniciar el flujo si cambia la imagen
+            img_sig = (h, w)
+            if "roi_img_sig" not in st.session_state or st.session_state.roi_img_sig != img_sig:
+                st.session_state.roi_img_sig = img_sig
+                st.session_state.roi_ready = False
+                st.session_state.roi_last_crop = None
 
-        elif modo == "Arrastrar":
-            if not HAS_CROPPER:
-                st.error("Instala streamlit-cropper: `pip install streamlit-cropper`")
-                st.info("Mientras tanto, usa el modo 'Coordenadas'")
-            else:
-                st.write("Arrastra para seleccionar la región:")
-                pil = Image.fromarray(rgb)
+            # Botón de control
+            if not st.session_state.get("roi_ready", False):
+                if st.button("Iniciar selección", type="primary", key="btn_start_crop"):
+                    st.session_state.roi_ready = True
+                    st.rerun()
+
+
+            # Mostrar imagen base siempre (da contexto y fuerza el primer render)
+            st.image(rgb, caption="Imagen original", use_container_width=True)
+
+            cropped = None
+            if st.session_state.get("roi_ready", False):
+                # Montamos el cropper solo cuando el usuario lo pide
                 cropped = st_cropper(
                     pil,
-                    box_color="red",
                     realtime_update=True,
                     aspect_ratio=None,
                     return_type="image",
+                    box_color="red",
+                    stroke_width=2,
+                    key=f"roi_cropper_active_{h}x{w}"
                 )
-                if st.button("Guardar ROI", key="save_roi_drag", type="primary"):
-                    try:
-                        if cropped is not None and cropped.size[0] > 0 and cropped.size[1] > 0:
-                            roi_bgr = np.array(cropped)[:, :, ::-1].copy()
-                            h2, w2 = roi_bgr.shape[:2]
-                            if h2 > 0 and w2 > 0:
-                                st.session_state.roi_data = {"image": roi_bgr, "bbox": (0, 0, w2, h2)}
-                                st.session_state.roi_saved = True
-                                st.success(f"ROI guardado: {w2}x{h2} px")
-                                st.balloons()
-                                st.rerun()
-                            else:
-                                st.error("El ROI está vacío.")
-                        else:
-                            st.error("No se obtuvo un recorte válido. Intenta de nuevo.")
-                    except Exception as e:
-                        st.error(f"Error al guardar ROI: {str(e)}")
+                st.session_state.roi_last_crop = cropped
+            else:
+                st.caption("Pulsa «Iniciar selección» para activar el recortador.")
+
+            # Guardar ROI
+            if st.button("Guardar ROI", key="save_roi_drag", type="primary"):
+                use_crop = st.session_state.get("roi_last_crop", None)
+                if use_crop is None or use_crop.size[0] == 0 or use_crop.size[1] == 0:
+                    st.error("No se obtuvo un recorte válido. Intenta de nuevo.")
+                else:
+                    roi_bgr = np.array(use_crop, copy=True)[:, :, ::-1]
+                    hh, ww = roi_bgr.shape[:2]
+                    st.session_state.roi_data = {"image": roi_bgr, "bbox": (0, 0, ww, hh)}
+                    st.session_state.roi_saved = True
+                    st.success(f"ROI guardada: {ww}x{hh} px")
+                    st.rerun()
 
 # ----------------------------
-# Tab 3: Detectar ROI
+# Tab 3: Detección ROI (solo BFMatcher)
 # ----------------------------
 with tab3:
-    st.subheader("Detección de ROI en transformaciones y deformaciones")
+    st.subheader("Detección de ROI en imágenes transformadas")
 
     if st.session_state.current_image is None:
         st.info("Sube una imagen en el sidebar.")
@@ -388,135 +197,332 @@ with tab3:
         base = st.session_state.current_image
         roi = st.session_state.roi_data["image"]
 
-        st.markdown("#### Transformaciones a generar")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            rot30 = st.checkbox("Rotación +30°", value=True)
-            rotm45 = st.checkbox("Rotación -45°", value=True)
-            esc15 = st.checkbox("Escala 1.5×", value=True)
-            esc07 = st.checkbox("Escala 0.7×", value=True)
-        with c2:
-            tr1 = st.checkbox("Traslación (50,100)", value=True)
-            tr2 = st.checkbox("Traslación (-30,80)", value=True)
-            per_l = st.checkbox("Perspectiva leve", value=True)
-            per_m = st.checkbox("Perspectiva moderada", value=True)
-        with c3:
-            per_f = st.checkbox("Perspectiva fuerte", value=True)
-            def_b = st.checkbox("Deformación barril", value=True)
-            def_c = st.checkbox("Deformación cojín", value=True)
+        fuente = st.radio(
+            "Fuente de transformaciones",
+            options=["Predefinidas", "Personalizadas"],
+            horizontal=True
+        )
+
+        if fuente == "Predefinidas":
+            st.markdown("Transformaciones a generar")
+            c1, c2 = st.columns(2)
+            with c1:
+                rot30 = st.checkbox("Rotación +30°", value=True)
+                rotm45 = st.checkbox("Rotación -45°", value=True)
+                esc15 = st.checkbox("Escala 1.5×", value=True)
+                esc07 = st.checkbox("Escala 0.7×", value=True)
+            with c2:
+                tr1 = st.checkbox("Traslación (50,100)", value=True)
+                tr2 = st.checkbox("Traslación (-30,80)", value=True)
+                def_b = st.checkbox("Deformación barril", value=True)
+                def_c = st.checkbox("Deformación cojín", value=True)
+
+        else:
+            if len(st.session_state.transform_specs) == 0:
+                st.warning("No hay transformaciones personalizadas definidas.")
+            else:
+                st.success(f"Usando {len(st.session_state.transform_specs)} transformaciones personalizadas.")
 
         st.markdown("---")
-        st.markdown("#### Parámetros de detección")
-        modo = st.selectbox("Modo de detección", options=["rigido", "deformacion"])
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            min_matches = st.slider("Mínimo de coincidencias", 4, 40, 10 if modo == "rigido" else 8, 1)
-        with col2:
-            ransac = st.slider("Umbral RANSAC (px)", 1, 15, 5 if modo == "rigido" else 8, 1)
-        with col3:
-            ratio = st.slider("Ratio test", 0.55, 0.95, 0.70 if modo == "rigido" else 0.80, 0.01)
+        st.markdown("Parámetros de detección")
 
-        run = st.button("🔍 Ejecutar detección", type="primary")
-        
+        # --- Emparejador ---
+        matcher = st.selectbox("Emparejador", ["BF (crossCheck)", "KNN (ratio test)"], index=0)
+        ratio = None
+        if matcher == "KNN (ratio test)":
+            ratio = st.slider("Ratio test (Lowe)", 0.55, 0.95, 0.75, 0.01)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            min_matches = st.slider("Mínimo de coincidencias", 3, 40, 5, 1)
+        with col2:
+            ransac = st.slider("Umbral RANSAC (px)", 1, 15, 5, 1)
+
+        topN = st.slider("Top N líneas de matches a dibujar", 5, 300, 20, 5)
+        run = st.button("Ejecutar detección", type="primary")
+
         if run:
             roi_gray = to_gray(roi)
             (kp_roi, des_roi), sift = extract_sift(roi_gray, st.session_state.sift)
-            
+
             if des_roi is None or len(kp_roi) == 0:
-                st.error("La ROI no tiene descriptores con los parámetros SIFT actuales. Ajusta SIFT en el sidebar.")
+                st.error("La ROI no tiene descriptores con los parámetros SIFT actuales.")
             else:
                 todo = []
-                if rot30: todo.append(("rotacion_30", rotate_image(base, 30)))
-                if rotm45: todo.append(("rotacion_-45", rotate_image(base, -45)))
-                if esc15: todo.append(("escala_1.5", scale_image(base, 1.5)))
-                if esc07: todo.append(("escala_0.7", scale_image(base, 0.7)))
-                if tr1:   todo.append(("traslacion_50_100", translate_image(base, 50, 100)))
-                if tr2:   todo.append(("traslacion_-30_80", translate_image(base, -30, 80)))
-                if per_l: todo.append(("perspectiva_leve", perspective_transform(base, "leve")))
-                if per_m: todo.append(("perspectiva_moderada", perspective_transform(base, "moderada")))
-                if per_f: todo.append(("perspectiva_fuerte", perspective_transform(base, "fuerte")))
-                if def_b: todo.append(("deformacion_barril", deform_barrel(base, 0.00001)))
-                if def_c: todo.append(("deformacion_cojin", deform_pincushion(base, -0.00001)))
+                if fuente == "Predefinidas":
+                    if rot30: todo.append(("rotacion_30", rotate_image(base, 30)))
+                    if rotm45: todo.append(("rotacion_-45", rotate_image(base, -45)))
+                    if esc15: todo.append(("escala_1.5", scale_image(base, 1.5)))
+                    if esc07: todo.append(("escala_0.7", scale_image(base, 0.7)))
+                    if tr1:   todo.append(("traslacion_50_100", translate_image(base, 50, 100)))
+                    if tr2:   todo.append(("traslacion_-30_80", translate_image(base, -30, 80)))
+                    if def_b: todo.append(("deformacion_barril", deform_barrel(base, 0.00001)))
+                    if def_c: todo.append(("deformacion_cojin", deform_pincushion(base, -0.00001)))
+
+                else:
+                    for i, spec in enumerate(st.session_state.transform_specs):
+                        try:
+                            name, img_t = apply_transform_spec(base, spec)
+                            todo.append((f"{i:02d}_{name}", img_t))
+                        except Exception as e:
+                            st.warning(f"Error en spec {i}: {e}")
 
                 if not todo:
                     st.warning("Selecciona al menos una transformación.")
                 else:
                     results = []
                     imgs_out = []
-                    prefer_affine = (modo == "deformacion")
-                    crosscheck = (modo == "deformacion")
 
                     progress_bar = st.progress(0)
                     status_text = st.empty()
 
                     for idx, (name, img_t) in enumerate(todo):
                         status_text.text(f"Procesando: {name}...")
-                        
                         gray_t = to_gray(img_t)
                         kp_t, des_t = sift.detectAndCompute(gray_t, None)
+
                         status = "NO DETECTADA"
                         good_n = 0
                         inliers = 0
                         kind = None
-                        vis = img_t.copy()
 
                         if des_t is not None and len(kp_t) > 1:
-                            good = match_flann(des_roi, des_t, ratio=ratio, crosscheck=crosscheck)
-                            good_n = len(good)
+                            if matcher == "BF (crossCheck)":
+                                matches = match_bf_crosscheck(des_roi, des_t)
+                            else:
+                                matches = match_knn_ratio(des_roi, des_t, ratio=ratio)
+
+                            good_n = len(matches)
+
                             if good_n >= min_matches:
-                                M, mask, inl, kind = estimate_geom(kp_roi, kp_t, good, ransac_thresh=ransac, prefer_affine=prefer_affine)
+                                M, mask, inl, kind = estimate_geom(kp_roi, kp_t, matches, ransac_thresh=ransac)
                                 inliers = inl
                                 if M is not None and inliers >= 4:
                                     poly = project_box(M, kind, roi_gray.shape[:2])
                                     if is_valid_quad(poly, img_t.shape):
-                                        cv.polylines(vis, [poly.reshape(-1, 1, 2)], True, (0, 0, 255), 3, cv.LINE_AA)
-                                        cv.putText(vis, f"ROI DETECTADA ({kind}, good={good_n}, inliers={inliers})",
-                                                   (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2, cv.LINE_AA)
                                         status = "DETECTADA"
+                                        vis = draw_matches_panel(roi, img_t, kp_roi, kp_t, matches, topN=topN, poly_right=poly)
                                     else:
-                                        vis = draw_text(vis, "Homografia/Afin invalida", (10, 30), (0, 165, 255))
+                                        vis = draw_matches_panel(roi, img_t, kp_roi, kp_t, matches, topN=topN,
+                                                                 banner=("Homografia/Afin invalida", (0,165,255)))
                                 else:
-                                    vis = draw_text(vis, "Homografia/Afin no estimable", (10, 30), (0, 0, 255))
+                                    vis = draw_matches_panel(roi, img_t, kp_roi, kp_t, matches, topN=topN,
+                                                             banner=("Homografia/Afin no estimable", (0,0,255)))
                             else:
-                                vis = draw_text(vis, f"Pocas coincidencias ({good_n})", (10, 30), (0, 0, 255))
+                                vis = draw_matches_panel(roi, img_t, kp_roi, kp_t, matches, topN=topN,
+                                                         banner=(f"Pocas coincidencias ({good_n})", (0,0,255)))
                         else:
-                            vis = draw_text(vis, "Sin keypoints en imagen", (10, 30), (0, 0, 255))
+                            vis = draw_matches_panel(roi, img_t, [], [], [], topN=0,
+                                                     banner=("Sin keypoints en imagen", (0,0,255)))
 
                         results.append(dict(nombre=name, status=status, good=good_n, inliers=inliers, modelo=kind or "-"))
                         imgs_out.append((name, vis))
-                        
                         progress_bar.progress((idx + 1) / len(todo))
 
-                    status_text.text("¡Procesamiento completado!")
+                    status_text.text("Procesamiento completado")
                     progress_bar.empty()
 
                     st.markdown("---")
-                    st.markdown("#### Resultados visuales")
+                    st.markdown("Resultados visuales (ROI a la izquierda, imagen transformada a la derecha)")
                     for name, vis in imgs_out:
                         st.image(bgr_to_rgb(vis), caption=name, use_container_width=True)
 
-                    st.markdown("---")
-                    st.markdown("#### Resumen de detecciones")
-                    import pandas as pd
                     df = pd.DataFrame(results)
                     st.dataframe(df, use_container_width=True)
-                    
-                    # Estadísticas
+
                     detectadas = sum(1 for r in results if r["status"] == "DETECTADA")
                     total = len(results)
                     st.metric("Tasa de detección", f"{detectadas}/{total} ({100*detectadas/total:.1f}%)")
 
-                    # Descargar resultados
                     buf = io.BytesIO()
                     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                         for name, vis in imgs_out:
                             _, png = cv.imencode(".png", vis[:, :, ::-1])
                             zf.writestr(f"{name}.png", png.tobytes())
                         zf.writestr("resumen.csv", df.to_csv(index=False).encode("utf-8"))
-                    
+
                     st.download_button(
                         "Descargar resultados (ZIP)",
                         data=buf.getvalue(),
                         file_name="resultados_deteccion.zip",
                         mime="application/zip"
                     )
+
+# ----------------------------
+# Tab 4: Transformaciones personalizadas
+# ----------------------------
+with tab4:
+    st.subheader("Diseñador de transformaciones")
+    if st.session_state.current_image is None:
+        st.info("Sube una imagen en el sidebar.")
+    else:
+        img = st.session_state.current_image
+        h, w = img.shape[:2]
+
+        mode = st.radio(
+            "Tipo de transformación",
+            options=["Afín", "Distorsión"],
+            horizontal=True
+        )
+
+        # =====================================================================
+        # --------------------------- AFIN -----------------------------------
+        # =====================================================================
+        if "Afín" in mode:
+
+            col = st.columns(3)
+            with col[0]:
+                sf = st.slider("Factor lienzo", 1.2, 4.0, 2.0, 0.1)
+                ang = st.slider("Ángulo (°)", 0, 360, 0, 1)
+                sx = st.slider("Escala X", 0.10, 3.00, 1.00, 0.01)
+                uniform = st.checkbox("Escalado uniforme", value=False)
+            with col[1]:
+                if uniform:
+                    sy = sx
+                    st.write(f"Escala Y = {sy:.2f} (uniforme)")
+                else:
+                    sy = st.slider("Escala Y", 0.10, 3.00, 1.00, 0.01)
+
+                CW, CH = int(w * sf), int(h * sf)
+
+                # --- Estado inicial si no existe ---
+                if "tab4_t" not in st.session_state:
+                    st.session_state.tab4_t = np.array([0.0, 0.0], np.float32)
+                if "tab4_prev_c" not in st.session_state:
+                    st.session_state.tab4_prev_c = np.array([CW // 2, CH // 2], np.float32)
+
+                t_state = st.session_state.tab4_t.astype(np.float32)
+                prev_c = st.session_state.tab4_prev_c.astype(np.float32)
+            with col[2]:
+                cx_ui = st.slider("Centro Cx (px lienzo)", 0, CW, CW // 2, 1)
+                cy_ui = st.slider("Centro Cy (px lienzo)", 0, CH, CH // 2, 1)
+                name = st.text_input("Nombre", value=f"affine_{ang}deg")
+
+            # --- Matriz A y centro actual ---
+            A, I = affine_matrix_RS(angle_deg=float(ang), sx=float(sx), sy=float(sy))
+            c_now = np.array([float(cx_ui), float(cy_ui)], np.float32)
+
+            # --- Compensar cambio de pivote antes de crear sliders ---
+            if not np.allclose(c_now, prev_c):
+                t_state = affine_update_t_for_pivot(t_state, prev_c, c_now, A, I)
+                st.session_state.tab4_t = t_state.copy()
+                st.session_state.tab4_prev_c = c_now.copy()
+
+            # --- Sliders de traslación (sin key para evitar conflictos) ---
+            tx_ui = st.slider(
+                "Tx (px lienzo)",
+                -CW // 2, CW // 2,
+                value=int(round(t_state[0])),
+                step=1
+            )
+            ty_ui = st.slider(
+                "Ty (px lienzo)",
+                -CH // 2, CH // 2,
+                value=int(round(t_state[1])),
+                step=1
+            )
+
+            # --- Si el usuario mueve los sliders, actualizar t_state ---
+            if (tx_ui != int(round(t_state[0]))) or (ty_ui != int(round(t_state[1]))):
+                t_state = np.array([float(tx_ui), float(ty_ui)], np.float32)
+                st.session_state.tab4_t = t_state.copy()
+
+            # --- Construcción de la matriz completa ---
+            M, b = affine_build_2x3(A=A, t=t_state, c=c_now, I=I)
+
+            # --- Vista previa ---
+            view, pc, CW, CH, ox, oy = affine_preview_on_canvas(
+                img=img, scale_factor=sf, M=M, A=A, b=b, c_now=c_now
+            )
+
+            # Dibujar pivote en la vista
+            disp = view.copy()
+            cv.circle(disp, (int(pc[0]-ox), int(pc[1]-oy)), 6, (0,0,255), -1)
+            cv.putText(disp, f"C=({int(cx_ui)},{int(cy_ui)})",
+                       (int(pc[0]-ox)+10, int(pc[1]-oy)-10),
+                       cv.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+
+            st.image(bgr_to_rgb(disp), caption="Vista previa", use_container_width=True)
+
+            # --- Botones ---
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Añadir a lista"):
+                    st.session_state.transform_specs.append(dict(
+                        type="affine", name=name, scale_factor=float(sf),
+                        tx=float(t_state[0]), ty=float(t_state[1]),
+                        angle=float(ang), cx=float(c_now[0]), cy=float(c_now[1]),
+                        sx=float(sx), sy=float(sy)
+                    ))
+                    st.success("Transformación añadida")
+            with c2:
+                if st.button("Vaciar lista"):
+                    st.session_state.transform_specs = []
+                    st.info("Lista vaciada")
+
+        # =====================================================================
+        # ------------------------- DISTORSIÓN -------------------------------
+        # =====================================================================
+        else:
+            st.markdown("Parámetros de distorsión radial/tangencial")
+            col = st.columns(3)
+            with col[0]:
+                k1 = st.slider("k1 ×1e-3", -100, 100, 0, 1) / 1000.0
+                k2 = st.slider("k2 ×1e-3", -100, 100, 0, 1) / 1000.0
+            with col[1]:
+                p1 = st.slider("p1 ×1e-3", -100, 100, 0, 1) / 1000.0
+                p2 = st.slider("p2 ×1e-3", -100, 100, 0, 1) / 1000.0
+            with col[2]:
+                k3 = st.slider("k3 ×1e-3", -100, 100, 0, 1) / 1000.0
+                focal = st.slider("Focal", 1.0, 50.0, 10.0, 0.5)
+            use_center = st.checkbox("Fijar centro manual", value=False)
+            if use_center:
+                cx = st.slider("Cx (px)", 0, w, w//2, 1)
+                cy = st.slider("Cy (px)", 0, h, h//2, 1)
+                center = (cx, cy)
+            else:
+                center = None
+
+            prev = apply_distortion_full(img, k1, k2, p1, p2, k3, center=center, focal=focal)
+            st.image(bgr_to_rgb(prev), caption="Vista previa", use_container_width=True)
+
+            c1, c2 = st.columns(2)
+            with c1:
+                name = st.text_input("Nombre", value="distortion_custom")
+                if st.button("Añadir a lista"):
+                    spec = dict(type="distortion", name=name, k1=k1, k2=k2, p1=p1, p2=p2, k3=k3, focal=focal)
+                    if center is not None:
+                        spec["cx"], spec["cy"] = center[0], center[1]
+                    st.session_state.transform_specs.append(spec)
+                    st.success("Transformación añadida")
+            with c2:
+                if st.button("Vaciar lista"):
+                    st.session_state.transform_specs = []
+                    st.info("Lista vaciada")
+
+        # =====================================================================
+        # --------------------------- LISTA ----------------------------------
+        # =====================================================================
+        st.markdown("---")
+        st.markdown("Transformaciones en la lista")
+
+        specs = st.session_state.transform_specs
+        if len(specs) == 0:
+            st.info("No hay transformaciones añadidas.")
+        else:
+            df = pd.DataFrame(specs)
+            st.dataframe(df, use_container_width=True)
+
+            # Botones de borrado robustos
+            to_delete = None
+            for i, spec in enumerate(specs):
+                c1, c2 = st.columns([8, 1])
+                with c1:
+                    st.code(str(spec))
+                with c2:
+                    if st.button("Eliminar", key=f"del_{i}"):
+                        to_delete = i
+
+            if to_delete is not None:
+                st.session_state.transform_specs.pop(to_delete)
+                st.rerun()  # <-- reemplaza experimental_rerun por rerun
