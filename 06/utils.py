@@ -127,3 +127,75 @@ def realzar_crestas(db_path, out_path):
             cv.imwrite(os.path.join(out_dir, filename), sobel_8u)
 
 # PREPROCESADO: Refinar la ROI
+def refinar_crestas(db_path, out_path):
+    """
+    Refina las imágenes generadas por Sobel eliminando bordes falsos y ruido periférico.
+    Invierte los colores (fondo blanco, crestas negras) para mejor detección SIFT.
+    Guarda los resultados en out_path/<user>/refinadas
+    """
+    users = os.listdir(db_path)
+    for user in users:
+        user_folder = os.path.join(out_path, user, "sobel")
+        if not os.path.isdir(user_folder):
+            continue
+
+        image_files = [f for f in os.listdir(user_folder) if f.lower().endswith('.png')]
+        if len(image_files) == 0:
+            continue
+
+        out_dir = os.path.join(out_path, user, "refinadas")
+        os.makedirs(out_dir, exist_ok=True)
+
+        for filename in image_files:
+            img_path = os.path.join(user_folder, filename)
+            image = cv.imread(img_path, cv.IMREAD_GRAYSCALE)
+            
+            if image is None or image.size == 0:
+                print(f"(i) Imagen no legible: {filename}")
+                continue
+
+            # --- PASO 1: Eliminar bordes de la imagen (recorte interno) ---
+            h, w = image.shape
+            margin = int(min(h, w) * 0.05)  # 5% de margen
+            cropped = image[margin:h-margin, margin:w-margin]
+
+            # --- PASO 2: Operaciones morfológicas para limpiar ruido ---
+            # Apertura: elimina puntos blancos aislados (ruido)
+            kernel_open = cv.getStructuringElement(cv.MORPH_ELLIPSE, (3, 3))
+            opened = cv.morphologyEx(cropped, cv.MORPH_OPEN, kernel_open, iterations=1)
+            
+            # Cierre: conecta líneas de crestas rotas
+            kernel_close = cv.getStructuringElement(cv.MORPH_ELLIPSE, (2, 2))
+            closed = cv.morphologyEx(opened, cv.MORPH_CLOSE, kernel_close, iterations=1)
+
+            # --- PASO 3: Adelgazamiento alternativo (sin ximgproc) ---
+            # Erosión suave para reducir grosor de crestas
+            kernel_thin = cv.getStructuringElement(cv.MORPH_CROSS, (3, 3))
+            refined = cv.morphologyEx(closed, cv.MORPH_ERODE, kernel_thin, iterations=1)
+
+            # --- PASO 4: Filtrado de componentes pequeños ---
+            num_labels, labels, stats, _ = cv.connectedComponentsWithStats(refined, connectivity=8)
+            min_size = 50  # píxeles mínimos para considerar válido
+            
+            mask = np.zeros_like(refined)
+            for i in range(1, num_labels):  # Ignorar el fondo (label 0)
+                if stats[i, cv.CC_STAT_AREA] >= min_size:
+                    mask[labels == i] = 255
+
+            # --- PASO 5: INVERTIR COLORES (fondo blanco, crestas negras) ---
+            refinada = cv.bitwise_not(mask)
+
+            # --- PASO 6 (OPCIONAL): Rellenar bordes con blanco ---
+            # Crea un borde blanco alrededor para eliminar cualquier resto negro en márgenes
+            border_size = 10
+            refinada = cv.copyMakeBorder(
+                refinada, 
+                border_size, border_size, border_size, border_size,
+                cv.BORDER_CONSTANT, 
+                value=255  # Blanco
+            )
+
+            # --- PASO 7: Guardar resultado ---
+            cv.imwrite(os.path.join(out_dir, filename), refinada)
+
+        print(f"[{user}] refinadas guardadas en '{out_dir}'")

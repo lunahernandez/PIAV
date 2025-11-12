@@ -3,6 +3,7 @@ from utils import (
     ecualizar_histograma,
     aplicar_filtro_bilateral,
     realzar_crestas,
+    refinar_crestas,
 )
 
 def main():
@@ -23,6 +24,9 @@ def main():
 
     print("Paso 4. Aplicar un realce de crestas")
     realzar_crestas(DB_PATH, OUT_PATH)
+
+    print("Paso 5. Refinar las crestas eliminando bordes falsos")
+    refinar_crestas(DB_PATH, OUT_PATH)
 
     print(20*"-")
     print("Preprocesado finalizado")
