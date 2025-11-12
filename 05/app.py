@@ -465,16 +465,15 @@ with tab4:
         # =====================================================================
         else:
             st.markdown("Parámetros de distorsión radial/tangencial")
-            col = st.columns(3)
+            col = st.columns(2)
             with col[0]:
-                k1 = st.slider("k1 ×1e-3", -100, 100, 0, 1) / 1000.0
-                k2 = st.slider("k2 ×1e-3", -100, 100, 0, 1) / 1000.0
+                k1 = st.slider("k1", -500, 500, 0, 1) / 1000.0      # [-0.5, 0.5]
+                k2 = st.slider("k2", -200, 200, 0, 1) / 10000.0     # [-0.02, 0.02]
+                k3 = st.slider("k3", -100, 100, 0, 1) / 100000.0    # [-0.001, 0.001]
             with col[1]:
-                p1 = st.slider("p1 ×1e-3", -100, 100, 0, 1) / 1000.0
-                p2 = st.slider("p2 ×1e-3", -100, 100, 0, 1) / 1000.0
-            with col[2]:
-                k3 = st.slider("k3 ×1e-3", -100, 100, 0, 1) / 1000.0
-                focal = st.slider("Focal", 1.0, 50.0, 10.0, 0.5)
+                p1 = st.slider("p1", -100, 100, 0, 1) / 1000.0    # [-0.1, 0.1]
+                p2 = st.slider("p2", -100, 100, 0, 1) / 1000.0    # [-0.1, 0.1]
+
             use_center = st.checkbox("Fijar centro manual", value=False)
             if use_center:
                 cx = st.slider("Cx (px)", 0, w, w//2, 1)
@@ -483,14 +482,14 @@ with tab4:
             else:
                 center = None
 
-            prev = apply_distortion_full(img, k1, k2, p1, p2, k3, center=center, focal=focal)
+            prev = apply_distortion_full(img, k1, k2, p1, p2, k3, center=center, focal=50.0)
             st.image(bgr_to_rgb(prev), caption="Vista previa", use_container_width=True)
 
             c1, c2 = st.columns(2)
             with c1:
                 name = st.text_input("Nombre", value="distortion_custom")
                 if st.button("Añadir a lista"):
-                    spec = dict(type="distortion", name=name, k1=k1, k2=k2, p1=p1, p2=p2, k3=k3, focal=focal)
+                    spec = dict(type="distortion", name=name, k1=k1, k2=k2, p1=p1, p2=p2, k3=k3, focal=50.0)
                     if center is not None:
                         spec["cx"], spec["cy"] = center[0], center[1]
                     st.session_state.transform_specs.append(spec)

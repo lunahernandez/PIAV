@@ -225,6 +225,7 @@ def apply_distortion_full(image, k1, k2, p1, p2, k3, center=None, focal=10.0):
     out = cv.undistort(image, cam, dist)
     return out
 
+
 def apply_transform_spec(base_img, spec):
     """
     Aplica una transformación según un spec:
