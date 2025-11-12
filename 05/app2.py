@@ -52,13 +52,6 @@ if upl is not None:
         st.session_state.roi_data = None
         st.session_state.roi_saved = False
 
-if st.session_state.roi_data is not None:
-    st.sidebar.success("ROI guardado")
-    bbox = st.session_state.roi_data["bbox"]
-    st.sidebar.caption(f"Tamaño: {bbox[2]}x{bbox[3]} px")
-else:
-    st.sidebar.info("Sin ROI guardado")
-
 st.sidebar.subheader("Parámetros SIFT")
 nfeatures = st.sidebar.slider("nfeatures", 0, 10000, int(st.session_state.sift["nfeatures"]), 50)
 nOctaveLayers = st.sidebar.slider("nOctaveLayers", 1, 10, int(st.session_state.sift["nOctaveLayers"]), 1)
@@ -97,7 +90,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # Tab 1: Características
 # ----------------------------
 with tab1:
-    st.subheader("Vista de keypoints SIFT")
+    st.subheader("Vista de Puntos Clave Detectados con SIFT")
     img = st.session_state.current_image
     if img is None:
         st.info("Sube una imagen en el sidebar.")
@@ -117,7 +110,7 @@ except Exception:
     HAS_CROPPER = False
 
 with tab2:
-    st.subheader("Definir ROI (Región de Interés)")
+    st.subheader("Definir ROI")
     img = st.session_state.current_image
 
     if img is None:
@@ -195,7 +188,7 @@ with tab2:
 # Tab 3: Detección ROI (solo BFMatcher)
 # ----------------------------
 with tab3:
-    st.subheader("Detección de ROI")
+    st.subheader("Detección de ROI´en imágenes transformadas")
 
     if st.session_state.current_image is None:
         st.info("Sube una imagen en el sidebar.")
@@ -388,15 +381,14 @@ with tab4:
 
         mode = st.radio(
             "Tipo de transformación",
-            options=["Afin (Tx,Ty,Ángulo,Escala,Centro)", "Distorsión (k1,k2,p1,p2,k3)"],
+            options=["Afín", "Distorsión"],
             horizontal=True
         )
 
         # =====================================================================
         # --------------------------- AFIN -----------------------------------
         # =====================================================================
-        if "Afin" in mode:
-            st.markdown("Parámetros de afin con pivote y compensación exacta (b = t + (I - A)·c)")
+        if "Afín" in mode:
 
             col = st.columns(3)
             with col[0]:
@@ -470,7 +462,7 @@ with tab4:
                        (int(pc[0]-ox)+10, int(pc[1]-oy)-10),
                        cv.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
 
-            st.image(bgr_to_rgb(disp), caption="Vista previa (recorte central)", use_container_width=True)
+            st.image(bgr_to_rgb(disp), caption="Vista previa", use_container_width=True)
 
             # --- Botones ---
             c1, c2 = st.columns(2)
@@ -512,7 +504,7 @@ with tab4:
                 center = None
 
             prev = apply_distortion_full(img, k1, k2, p1, p2, k3, center=center, focal=focal)
-            st.image(bgr_to_rgb(prev), caption="Vista previa distorsión", use_container_width=True)
+            st.image(bgr_to_rgb(prev), caption="Vista previa", use_container_width=True)
 
             c1, c2 = st.columns(2)
             with c1:
