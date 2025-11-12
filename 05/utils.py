@@ -23,19 +23,11 @@ def file_to_bgr(uploaded_file):
     return arr
 
 def bgr_to_rgb(img):
-    return cv.cvtColor(img, cv.COLOR_BGR2RGB)
+    # Versión simple y rápida (coherente con tu app)
+    return img[:, :, ::-1] if img.ndim == 3 else img
 
 def to_gray(img_bgr):
-    return cv.cvtColor(img_bgr, cv.COLOR_BGR2GRAY)
-
-def draw_text(img, text, org=(10, 30), color=(0, 255, 0)):
-    vis = img.copy()
-    cv.putText(vis, text, org, cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 3, cv.LINE_AA)
-    cv.putText(vis, text, org, cv.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv.LINE_AA)
-    return vis
-
-def norm_int(v, lo, hi):
-    return max(lo, min(hi, v))
+    return cv.cvtColor(img_bgr, cv.COLOR_BGR2GRAY) if img_bgr.ndim == 3 else img_bgr
 
 # ----------------------------
 # Transformaciones “por defecto”
@@ -69,20 +61,6 @@ def translate_image(img, tx, ty):
     M = np.float32([[1, 0, tx], [0, 1, ty]])
     return cv.warpAffine(img, M, (w, h), borderValue=(255, 255, 255))
 
-def perspective_transform(img, intensity="leve"):
-    h, w = img.shape[:2]
-    pts1 = np.float32([[0, 0], [w-1, 0], [0, h-1], [w-1, h-1]])
-    base_offset = min(w, h) // 20
-    factor = {"leve": 1, "moderada": 2, "fuerte": 3}.get(intensity, 1)
-    offset = base_offset * factor
-    pts2 = np.float32([
-        [offset, offset//2],
-        [w - offset*2, offset],
-        [offset//2, h - offset],
-        [w - offset, h - offset//2]
-    ])
-    M = cv.getPerspectiveTransform(pts1, pts2)
-    return cv.warpPerspective(img, M, (w, h), borderValue=(255, 255, 255))
 
 def deform_radial(img, k=0.00001):
     h, w = img.shape[:2]
@@ -115,6 +93,26 @@ def extract_sift(gray, params):
     sift = create_sift(params)
     return sift.detectAndCompute(gray, None), sift
 
+def match_bf_crosscheck(des1, des2):
+    bf = cv.BFMatcher(cv.NORM_L2, crossCheck=True)
+    matches = bf.match(des1, des2)
+    return sorted(matches, key=lambda x: x.distance)
+
+def match_knn_ratio(des1, des2, ratio=0.75, k=2):
+    """
+    Empareja con KNN y aplica el ratio test de Lowe.
+    Devuelve lista plana de DMatch (solo el mejor por par filtrado).
+    """
+    bf = cv.BFMatcher(cv.NORM_L2, crossCheck=False)
+    knn = bf.knnMatch(des1, des2, k=k)
+    good = []
+    for pair in knn:
+        if len(pair) < 2:
+            continue
+        m, n = pair[0], pair[1]
+        if m.distance < ratio * n.distance:
+            good.append(m)
+    return sorted(good, key=lambda x: x.distance)
 
 def estimate_geom(kp_q, kp_t, good, ransac_thresh=5.0, prefer_affine=False):
     if len(good) < 4:
@@ -171,6 +169,14 @@ def is_valid_quad(poly, img_shape, min_area_ratio=1e-4, max_area_ratio=0.95):
 # ----------------------------
 # Motor de transformaciones personalizadas
 # ----------------------------
+def make_canvas_centered(img, scale_factor=2):
+    """Devuelve canvas blanco y offset para centrar imagen."""
+    h, w = img.shape[:2]
+    CW, CH = int(w * scale_factor), int(h * scale_factor)
+    canvas = np.full((CH, CW, 3), 255, dtype=np.uint8)
+    ox, oy = (CW - w) // 2, (CH - h) // 2
+    canvas[oy:oy+h, ox:ox+w] = img
+    return canvas, (ox, oy), (CW, CH)
 
 def affine_matrix_with_pivot(angle_deg, sx, sy, cx, cy, tx, ty):
     """Construye M 2x3 tal que x' = A x + b, con pivote (cx,cy) y traslación (tx,ty)."""
@@ -185,7 +191,7 @@ def affine_matrix_with_pivot(angle_deg, sx, sy, cx, cy, tx, ty):
     c_vec = np.array([cx, cy], dtype=np.float32)
     t_vec = np.array([tx, ty], dtype=np.float32)
     b = (t_vec + (I - A) @ c_vec).astype(np.float32)  # b = t + (I - A) c
-    M = np.hstack([A, b.reshape(2, 1)])  # 2x3
+    M = np.hstack([A, b.reshape(2, 1)])
     return M
 
 def warp_affine_on_canvas(img, scale_factor, tx, ty, angle, cx, cy, sx, sy):
@@ -193,12 +199,11 @@ def warp_affine_on_canvas(img, scale_factor, tx, ty, angle, cx, cy, sx, sy):
     canvas, (ox, oy), (CW, CH) = make_canvas_centered(img, scale_factor)
     M = affine_matrix_with_pivot(angle, sx, sy, cx, cy, tx, ty)
     out = cv.warpAffine(canvas, M, (CW, CH), borderValue=(255, 255, 255))
-    # recorte de vista central (mismo tamaño que la imagen original)
     view = out[oy:oy+img.shape[0], ox:ox+img.shape[1]].copy()
     return out, view, (CW, CH)
 
 def apply_distortion_full(image, k1, k2, p1, p2, k3, center=None, focal=10.0):
-    """Aplica distorsión radial/tangencial (como la demo), devolviendo imagen del mismo tamaño."""
+    """Aplica distorsión radial/tangencial, devolviendo imagen del mismo tamaño."""
     h, w = image.shape[:2]
     cam = np.eye(3, dtype=np.float32)
     cam[0, 0] = focal
@@ -217,8 +222,6 @@ def apply_distortion_full(image, k1, k2, p1, p2, k3, center=None, focal=10.0):
     dist[3, 0] = float(p2)
     dist[4, 0] = float(k3)
 
-    # undistort aplica el modelo inverso: para simular distorsión “hacia fuera”
-    # puedes usar signos positivos/negativos apropiados en k1,k2,k3.
     out = cv.undistort(image, cam, dist)
     return out
 
@@ -258,33 +261,9 @@ def apply_transform_spec(base_img, spec):
     else:
         raise ValueError(f"Tipo de transformación no soportado: {t}")
 
-import cv2 as cv
-import numpy as np
-
-def match_bf_crosscheck(des1, des2):
-    bf = cv.BFMatcher(cv.NORM_L2, crossCheck=True)
-    matches = bf.match(des1, des2)
-    return sorted(matches, key=lambda x: x.distance)
-
-def match_knn_ratio(des1, des2, ratio=0.75, k=2):
-    """
-    Empareja con KNN y aplica el ratio test de Lowe.
-    Devuelve una lista plana de DMatch (solo el mejor por par filtrado).
-    """
-    bf = cv.BFMatcher(cv.NORM_L2, crossCheck=False)
-    knn = bf.knnMatch(des1, des2, k=k)
-    good = []
-    for pair in knn:
-        if len(pair) < 2:
-            continue
-        m, n = pair[0], pair[1]
-        if m.distance < ratio * n.distance:
-            good.append(m)
-    # ordenar por distancia, igual que en BF clásico
-    return sorted(good, key=lambda x: x.distance)
-
-
-
+# ----------------------------
+# Visualización de matches
+# ----------------------------
 def draw_matches_panel(img_left, img_right, kp_left, kp_right, matches, topN=100, poly_right=None, banner=None):
     left = cv.cvtColor(img_left, cv.COLOR_GRAY2BGR) if img_left.ndim == 2 else img_left.copy()
     right = cv.cvtColor(img_right, cv.COLOR_GRAY2BGR) if img_right.ndim == 2 else img_right.copy()
@@ -316,16 +295,9 @@ def draw_matches_panel(img_left, img_right, kp_left, kp_right, matches, topN=100
 
     return vis
 
-def to_gray(img):
-    return cv.cvtColor(img, cv.COLOR_BGR2GRAY) if img.ndim == 3 else img
-
-def bgr_to_rgb(img):
-    return img[:, :, ::-1] if img.ndim == 3 else img
-
-import cv2 as cv
-import numpy as np
-
-# --- Matrices A = R @ S y la identidad I ---
+# ----------------------------
+# Afin avanzado (RS, compensación y preview)
+# ----------------------------
 def affine_matrix_RS(angle_deg: float, sx: float, sy: float):
     """Devuelve (A, I) con A = R(ang) @ S(sx,sy)."""
     rad = np.deg2rad(angle_deg)
@@ -339,10 +311,7 @@ def affine_matrix_RS(angle_deg: float, sx: float, sy: float):
     return A, I
 
 def affine_update_t_for_pivot(t_state: np.ndarray, prev_c: np.ndarray, c_now: np.ndarray, A: np.ndarray, I: np.ndarray):
-    """
-    Mantiene constante b = t + (I - A)·c al cambiar c:  t' = b_keep - (I - A)·c_now
-    donde b_keep = t_state + (I - A)·prev_c
-    """
+    """Mantiene b = t + (I - A)·c constante al cambiar c."""
     b_keep = t_state + (I - A) @ prev_c
     t_new  = b_keep - (I - A) @ c_now
     return t_new.astype(np.float32)
@@ -358,7 +327,7 @@ def affine_preview_on_canvas(img: np.ndarray, scale_factor: float, M: np.ndarray
     Aplica warp sobre un lienzo centrado y devuelve:
       - view: recorte central del tamaño original
       - pc: pivote transformado (A·c + b)
-      - CW, CH, ox, oy: datos del lienzo/offset
+      - CW, CH, ox, oy
     """
     h, w = img.shape[:2]
     CW, CH = int(w*scale_factor), int(h*scale_factor)
@@ -369,19 +338,5 @@ def affine_preview_on_canvas(img: np.ndarray, scale_factor: float, M: np.ndarray
     out = cv.warpAffine(canvas, M, (CW, CH), borderValue=(255,255,255))
     pc  = (A @ c_now + b).astype(int)
 
-    # Marcador del pivote (opcional, el app dibuja sobre view si quiere)
-    disp = out  # si quieres dibujar aquí, haz una copia: out.copy()
-
-    view = disp[oy:oy+h, ox:ox+w].copy()
+    view = out[oy:oy+h, ox:ox+w].copy()
     return view, pc, CW, CH, ox, oy
-
-
-def make_canvas_centered(img, scale_factor=2): 
-    """Devuelve un canvas blanco (CH,CW,3) y el offset (ox,oy) para situar la imagen centrada.""" 
-    h, w = img.shape[:2] 
-    CW, CH = int(w * scale_factor), int(h * scale_factor) 
-    canvas = np.full((CH, CW, 3), 255, dtype=np.uint8) 
-    ox, oy = (CW - w) // 2, (CH - h) // 2 
-    canvas[oy:oy+h, ox:ox+w] = img 
-    return canvas, (ox, oy), (CW, CH)
-

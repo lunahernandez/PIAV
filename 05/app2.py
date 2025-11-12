@@ -10,7 +10,7 @@ import cv2 as cv
 from utils import (
     DEFAULT_SIFT,
     file_to_bgr, bgr_to_rgb, to_gray,
-    rotate_image, scale_image, translate_image, perspective_transform,
+    rotate_image, scale_image, translate_image,
     deform_barrel, deform_pincushion,
     extract_sift, estimate_geom, project_box, is_valid_quad,
     apply_transform_spec, match_bf_crosscheck, match_knn_ratio,
@@ -18,6 +18,7 @@ from utils import (
     affine_matrix_RS, affine_update_t_for_pivot, affine_build_2x3, affine_preview_on_canvas,
     apply_distortion_full
 )
+
 
 
 # ----------------------------
@@ -204,7 +205,7 @@ with tab3:
 
         if fuente == "Predefinidas":
             st.markdown("Transformaciones a generar")
-            c1, c2, c3 = st.columns(3)
+            c1, c2 = st.columns(2)
             with c1:
                 rot30 = st.checkbox("Rotación +30°", value=True)
                 rotm45 = st.checkbox("Rotación -45°", value=True)
@@ -213,12 +214,9 @@ with tab3:
             with c2:
                 tr1 = st.checkbox("Traslación (50,100)", value=True)
                 tr2 = st.checkbox("Traslación (-30,80)", value=True)
-                per_l = st.checkbox("Perspectiva leve", value=True)
-                per_m = st.checkbox("Perspectiva moderada", value=True)
-            with c3:
-                per_f = st.checkbox("Perspectiva fuerte", value=True)
                 def_b = st.checkbox("Deformación barril", value=True)
                 def_c = st.checkbox("Deformación cojín", value=True)
+
         else:
             if len(st.session_state.transform_specs) == 0:
                 st.warning("No hay transformaciones personalizadas definidas.")
@@ -258,11 +256,9 @@ with tab3:
                     if esc07: todo.append(("escala_0.7", scale_image(base, 0.7)))
                     if tr1:   todo.append(("traslacion_50_100", translate_image(base, 50, 100)))
                     if tr2:   todo.append(("traslacion_-30_80", translate_image(base, -30, 80)))
-                    if per_l: todo.append(("perspectiva_leve", perspective_transform(base, "leve")))
-                    if per_m: todo.append(("perspectiva_moderada", perspective_transform(base, "moderada")))
-                    if per_f: todo.append(("perspectiva_fuerte", perspective_transform(base, "fuerte")))
                     if def_b: todo.append(("deformacion_barril", deform_barrel(base, 0.00001)))
                     if def_c: todo.append(("deformacion_cojin", deform_pincushion(base, -0.00001)))
+
                 else:
                     for i, spec in enumerate(st.session_state.transform_specs):
                         try:
