@@ -9,18 +9,16 @@ import cv2 as cv
 
 from utils import (
     DEFAULT_SIFT,
-    file_to_bgr, bgr_to_rgb, to_gray, draw_text, norm_int,
+    file_to_bgr, bgr_to_rgb, to_gray,
     rotate_image, scale_image, translate_image, perspective_transform,
     deform_barrel, deform_pincushion,
     extract_sift, estimate_geom, project_box, is_valid_quad,
-    make_canvas_centered, warp_affine_on_canvas, apply_transform_spec, match_bf_crosscheck,
-    draw_matches_panel, to_gray, bgr_to_rgb, match_knn_ratio,
-    affine_matrix_RS,          # NUEVA
-    affine_update_t_for_pivot, # NUEVA
-    affine_build_2x3,          # NUEVA
-    affine_preview_on_canvas,
+    apply_transform_spec, match_bf_crosscheck, match_knn_ratio,
+    draw_matches_panel,
+    affine_matrix_RS, affine_update_t_for_pivot, affine_build_2x3, affine_preview_on_canvas,
     apply_distortion_full
 )
+
 
 # ----------------------------
 # Estado de sesión (solo UI)
@@ -357,20 +355,6 @@ with tab3:
 # ----------------------------
 # Tab 4: Transformaciones personalizadas
 # ----------------------------
-from utils import (
-    make_canvas_centered,
-    affine_matrix_RS,
-    affine_update_t_for_pivot,
-    affine_build_2x3,
-    affine_preview_on_canvas,
-    apply_distortion_full,
-    bgr_to_rgb,
-)
-import numpy as np
-import pandas as pd
-import cv2 as cv
-import streamlit as st
-
 with tab4:
     st.subheader("Diseñador de transformaciones")
     if st.session_state.current_image is None:
