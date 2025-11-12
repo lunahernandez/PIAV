@@ -3,8 +3,8 @@ import cv2 as cv
 import numpy as np
 from pathlib import Path
 
-### Inicio - Aplicación de ROI ###
 
+# PREPROCESADO: Buscar y segmentar la ROI
 def mejor_roi_por_negros(bw, ventana=500, paso=20, negros_val=255):
     H, W = bw.shape
     w = h = min(ventana, W, H)
@@ -48,152 +48,118 @@ def recorte_por_negros(img_path, ventana=500, paso=20, invert=False, out_dir=Non
     if out_dir is not None:
         Path(out_dir).mkdir(parents=True, exist_ok=True)
         base = Path(img_path).stem
-        roi_path = Path(out_dir) / f"{base}_roi.png"
+        roi_path = Path(out_dir) / f"{base}.png"
         cv.imwrite(str(roi_path), roi)
 
     return roi, bw, (x, y, w, h), (negros, blancos)
 
 
-def ejecutar_recorte_por_negros():
-    sample_path = r"06/data"
-    folders = os.listdir(sample_path)
-
-    print("Carpetas encontradas:", folders)
-    for folder in folders:
-        folder_path = os.path.join(sample_path, folder)
-        if not os.path.isdir(folder_path):
+def recortar_roi(db_path, out_path, ventana=500, paso=15):
+    users = os.listdir(db_path)
+    for user in users:
+        user_folder = os.path.join(db_path, user)
+        if not os.path.isdir(user_folder):
             continue
 
-        out_dir = os.path.join(folder_path, "roi")
-
-        image_files = [f for f in os.listdir(folder_path) if f.lower().endswith(".png")]
-        if len(image_files) == 0:
-            print(f"(i) '{folder}' no tiene imágenes .png")
+        image_files = [f for f in os.listdir(user_folder) if f.lower().endswith(".png")]
+        if len(image_files) < 2:
             continue
-
         image_files.sort()
-        for fname in image_files:
-            img_path = os.path.join(folder_path, fname)
-            recorte_por_negros(img_path, ventana=500, paso=15, invert=False, out_dir=out_dir)
+        
+        out_dir = os.path.join(out_path, user, "roi")
+        os.makedirs(out_dir, exist_ok=True)
 
-### Fin - Aplicación de ROI ###
+        for filename in image_files:
+            img_path = os.path.join(user_folder, filename)
+            recorte_por_negros(img_path, ventana=ventana, paso=paso, invert=False, out_dir=out_dir)
 
-### Inicio - Ecualización de histograma ###
 
-def ecualizar_histograma():
-    sample_path = r"06/data"
-    folders = os.listdir(sample_path)
-    print("Carpetas encontradas:", folders)
-
-    for folder in folders:
-        folder_path = os.path.join(sample_path, folder)
-        if not os.path.isdir(folder_path):
+# PREPROCESADO: Ecualizar y normalizar el histograma
+def ecualizar_histograma(db_path, out_path):
+    users = os.listdir(db_path)
+    for user in users:
+        user_folder = os.path.join(out_path, user, "roi")
+        if not os.path.isdir(user_folder):
             continue
 
-        roi_path = os.path.join(folder_path, "roi")
-        if not os.path.exists(roi_path):
-            print(f"La carpeta '{folder}' no tiene una subcarpeta 'roi'.")
-            continue
-
-        image_files = [f for f in os.listdir(roi_path) if f.lower().endswith('.png')]
+        image_files = [f for f in os.listdir(user_folder) if f.lower().endswith('.png')]
         if len(image_files) < 2:
-            print(f"No hay suficientes imágenes en {roi_path}")
             continue
 
-        img1 = cv.imread(os.path.join(roi_path, image_files[0]))
-        img2 = cv.imread(os.path.join(roi_path, image_files[1]))
+        image1 = cv.imread(os.path.join(user_folder, image_files[0]))
+        image2 = cv.imread(os.path.join(user_folder, image_files[1]))
 
-        gray1 = cv.cvtColor(img1, cv.COLOR_BGR2GRAY)
-        gray2 = cv.cvtColor(img2, cv.COLOR_BGR2GRAY)
+        gray1 = cv.cvtColor(image1, cv.COLOR_BGR2GRAY)
+        gray2 = cv.cvtColor(image2, cv.COLOR_BGR2GRAY)
 
-        eq1 = cv.equalizeHist(gray1)
-        eq2 = cv.equalizeHist(gray2)
+        equalized1 = cv.equalizeHist(gray1)
+        equalized2 = cv.equalizeHist(gray2)
 
-        out_folder = os.path.join(folder_path, "ecualizadas")
-        os.makedirs(out_folder, exist_ok=True)
+        out_dir = os.path.join(out_path, user, "equalized")
+        os.makedirs(out_dir, exist_ok=True)
 
-        cv.imwrite(os.path.join(out_folder, image_files[0]), eq1)
-        cv.imwrite(os.path.join(out_folder, image_files[1]), eq2)
-        print(f"Imágenes ecualizadas guardadas en '{out_folder}'.")
+        cv.imwrite(os.path.join(out_dir, image_files[0]), equalized1)
+        cv.imwrite(os.path.join(out_dir, image_files[1]), equalized2)
 
-### Fin - Ecualización de histograma ###
 
-### Inicio - Filtro bilateral ###
-
-def aplicar_filtro_bilateral():
-    sample_path = r"06/data"
-    folders = os.listdir(sample_path)
-    print("Carpetas encontradas:", folders)
-
-    for folder in folders:
-        folder_path = os.path.join(sample_path, folder)
-        if not os.path.isdir(folder_path):
+# PREPROCESADO: Aplicar un filtro bilateral
+def aplicar_filtro_bilateral(db_path, out_path):
+    users = os.listdir(db_path)
+    for user in users:
+        user_folder = os.path.join(out_path, user, "equalized")
+        if not os.path.isdir(user_folder):
+            print(f"No existe directorio: {user_folder}")
             continue
 
-        ecualizadas_path = os.path.join(folder_path, "ecualizadas")
-        if not os.path.exists(ecualizadas_path):
-            print(f"La carpeta '{folder}' no tiene una subcarpeta 'ecualizadas'.")
-            continue
-
-        image_files = [f for f in os.listdir(ecualizadas_path) if f.lower().endswith('.png')]
+        image_files = [f for f in os.listdir(user_folder) if f.lower().endswith('.png')]
         if len(image_files) < 2:
-            print(f"No hay suficientes imágenes en {ecualizadas_path}")
             continue
 
-        img1 = cv.imread(os.path.join(ecualizadas_path, image_files[0]))
-        img2 = cv.imread(os.path.join(ecualizadas_path, image_files[1]))
+        image1 = cv.imread(os.path.join(user_folder, image_files[0]))
+        image2 = cv.imread(os.path.join(user_folder, image_files[1]))
 
-        gray1 = cv.cvtColor(img1, cv.COLOR_BGR2GRAY)
-        gray2 = cv.cvtColor(img2, cv.COLOR_BGR2GRAY)
+        gray1 = cv.cvtColor(image1, cv.COLOR_BGR2GRAY)
+        gray2 = cv.cvtColor(image2, cv.COLOR_BGR2GRAY)
 
         bilateral1 = cv.bilateralFilter(gray1, d=10, sigmaColor=7, sigmaSpace=11)
         bilateral2 = cv.bilateralFilter(gray2, d=10, sigmaColor=7, sigmaSpace=11)
 
-        out_folder = os.path.join(folder_path, "filtradas_bilateral")
-        os.makedirs(out_folder, exist_ok=True)
+        out_dir = os.path.join(out_path, user, "bilateral_filter")
+        os.makedirs(out_dir, exist_ok=True)
 
-        cv.imwrite(os.path.join(out_folder, image_files[0]), bilateral1)
-        cv.imwrite(os.path.join(out_folder, image_files[1]), bilateral2)
-        print(f"Imágenes filtradas con bilateral guardadas en '{out_folder}'.")
+        cv.imwrite(os.path.join(out_dir, image_files[0]), bilateral1)
+        cv.imwrite(os.path.join(out_dir, image_files[1]), bilateral2)
 
-### Fin - Filtro bilateral ###
 
-### Inico - Sobel ###
-
-def aplicar_sobel():
-    sample_path = r"06/data"
-    folders = os.listdir(sample_path)
-    print("Carpetas encontradas:", folders)
-
-    for folder in folders:
-        folder_path = os.path.join(sample_path, folder)
-        if not os.path.isdir(folder_path):
+# PREPROCESADO: Aplicar un realce de crestas
+def realzar_crestas(db_path, out_path):
+    users = os.listdir(db_path)
+    for user in users:
+        user_folder = os.path.join(out_path, user, "bilateral_filter")
+        if not os.path.isdir(user_folder):
             continue
 
-        filtradas_path = os.path.join(folder_path, "filtradas_bilateral")
-        if not os.path.exists(filtradas_path):
-            print(f"La carpeta '{folder}' no tiene una subcarpeta 'filtradas_bilateral'.")
-            continue
-
-        image_files = [f for f in os.listdir(filtradas_path) if f.lower().endswith('.png')]
+        image_files = [f for f in os.listdir(user_folder) if f.lower().endswith('.png')]
         if len(image_files) < 2:
-            print(f"No hay suficientes imágenes en {filtradas_path}")
             continue
 
-        img1 = cv.imread(os.path.join(filtradas_path, image_files[0]))
-        img2 = cv.imread(os.path.join(filtradas_path, image_files[1]))
+        image1 = cv.imread(os.path.join(user_folder, image_files[0]))
+        image2 = cv.imread(os.path.join(user_folder, image_files[1]))
 
-        gray1 = cv.cvtColor(img1, cv.COLOR_BGR2GRAY)
-        gray2 = cv.cvtColor(img2, cv.COLOR_BGR2GRAY)
+        gray1 = cv.cvtColor(image1, cv.COLOR_BGR2GRAY)
+        gray2 = cv.cvtColor(image2, cv.COLOR_BGR2GRAY)
 
         sobel1 = cv.Sobel(gray1, cv.CV_64F, 0, 1, ksize=5)
         sobel2 = cv.Sobel(gray2, cv.CV_64F, 0, 1, ksize=5)
 
-        out_folder = os.path.join(folder_path, "sobel")
-        os.makedirs(out_folder, exist_ok=True)
+        out_dir = os.path.join(out_path, user, "sobel")
+        os.makedirs(out_dir, exist_ok=True)
 
-        cv.imwrite(os.path.join(out_folder, image_files[0]), sobel1)
-        cv.imwrite(os.path.join(out_folder, image_files[1]), sobel2)
-        print(f"Imágenes filtradas con sobel guardadas en '{out_folder}'.")
+        # Código de GPT para solventar warning: [ WARN:0@0.762] global loadsave.cpp:1063 cv::imwrite_ Unsupported depth image for selected encoder is fallbacked to CV_8U.
+        sobel1_8u = cv.normalize(sobel1, None, 0, 255, cv.NORM_MINMAX).astype(np.uint8)
+        sobel2_8u = cv.normalize(sobel2, None, 0, 255, cv.NORM_MINMAX).astype(np.uint8)
 
-### Fin - Sobel ###
+        cv.imwrite(os.path.join(out_dir, image_files[0]), sobel1_8u)
+        cv.imwrite(os.path.join(out_dir, image_files[1]), sobel2_8u)
+
+# PREPROCESADO: Refinar la ROI
