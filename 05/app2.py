@@ -188,7 +188,7 @@ with tab2:
 # Tab 3: Detección ROI (solo BFMatcher)
 # ----------------------------
 with tab3:
-    st.subheader("Detección de ROI´en imágenes transformadas")
+    st.subheader("Detección de ROI en imágenes transformadas")
 
     if st.session_state.current_image is None:
         st.info("Sube una imagen en el sidebar.")
