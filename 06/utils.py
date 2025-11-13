@@ -122,9 +122,12 @@ def realzar_crestas(db_path, out_path):
             img_path = os.path.join(user_folder, filename)
             image = cv.imread(img_path)
             gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
-            sobel = cv.Sobel(gray, cv.CV_64F, 0, 1, ksize=5)
-            _, bw = cv.threshold(sobel, 0, 255, cv.THRESH_BINARY_INV)
-            sobel_8u = cv.normalize(bw, None, 0, 255, cv.NORM_MINMAX).astype(np.uint8) # Código de GPT para solventar warning: [ WARN:0@0.762] global loadsave.cpp:1063 cv::imwrite_ Unsupported depth image for selected encoder is fallbacked to CV_8U.
+            sobelx = cv.Sobel(gray, cv.CV_64F, 1, 0, ksize=3)
+            sobely = cv.Sobel(gray, cv.CV_64F, 0, 1, ksize=3)
+
+            sobel = cv.magnitude(sobelx, sobely)
+            # _, bw = cv.threshold(sobel, 0, 255, cv.THRESH_BINARY_INV)
+            sobel_8u = cv.normalize(sobel, None, 0, 255, cv.NORM_MINMAX).astype(np.uint8) # Código de GPT para solventar warning: [ WARN:0@0.762] global loadsave.cpp:1063 cv::imwrite_ Unsupported depth image for selected encoder is fallbacked to CV_8U.
             cv.imwrite(os.path.join(out_dir, filename), sobel_8u)
 
 # PREPROCESADO: Refinar la ROI
@@ -164,7 +167,7 @@ def refinar_crestas(db_path, out_path):
 def comparar_huellas_mismo_usuario(
     db_path,
     out_path,
-    nfeatures=6000,
+    nfeatures=15000,
     contrastThreshold=0.01,
     edgeThreshold=10,
     sigma=1.4,
@@ -172,7 +175,7 @@ def comparar_huellas_mismo_usuario(
     users = os.listdir(db_path)
 
     for user in users:
-        folder = os.path.join(out_path, user, "refinadas")
+        folder = os.path.join(out_path, user, "sobel")
         if not os.path.isdir(folder):
             continue
 
@@ -209,9 +212,9 @@ def comparar_huellas_mismo_usuario(
         matches = bf.knnMatch(des1, des2, k=2)
 
         # Lowe Ratio
-        good = [m for m, n in matches if m.distance < 0.80 * n.distance]
+        good = [m for m, n in matches if m.distance < 0.70 * n.distance]
 
-        if len(good) < 8:
+        if len(good) < 4:
             print(f"\nUsuario {user}: Muy pocos matches")
             continue
 
@@ -219,7 +222,7 @@ def comparar_huellas_mismo_usuario(
         src = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1,1,2)
         dst = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1,1,2)
 
-        M, mask = cv.findHomography(src, dst, cv.RANSAC, 5.0)
+        M, mask = cv.findHomography(src, dst, cv.RANSAC, 8.0)
         if mask is None:
             print(f"\nUsuario {user}: No homografía válida")
             continue
@@ -229,7 +232,7 @@ def comparar_huellas_mismo_usuario(
         print(f"\nUsuario {user}: inliers={inliers}, ratio={ratio:.1f}%")
 
         # Decisión final
-        if inliers >= 8 and ratio >= 40:
+        if inliers >= 4 and ratio >= 25:
             print("MATCH - Huellas coinciden")
         else:
             print("NO MATCH - Pocos inliers")
@@ -250,3 +253,111 @@ def comparar_huellas_mismo_usuario(
         cv.imshow(f"Matches entre huellas - {user}", vis)
         cv.waitKey(0)
         cv.destroyAllWindows()
+
+def comparar_primera_huella_con_otros_usuarios(
+    db_path,
+    out_path,
+    ref_user,
+    nfeatures=15000,
+    contrastThreshold=0.01,
+    edgeThreshold=10,
+    sigma=1.4,
+):
+    """
+    Compara la primera huella refinada de `ref_user` con la primera huella refinada
+    de todos los demás usuarios. El objetivo es verificar que NO hagan match.
+    """
+
+    # Carpeta de huellas refinadas del usuario de referencia
+    ref_folder = os.path.join(out_path, ref_user, "sobel")
+    if not os.path.isdir(ref_folder):
+        print(f"[ERROR] No existe carpeta de refinadas para el usuario de referencia: {ref_folder}")
+        return
+
+    # Imagen de referencia
+    ref_files = sorted([f for f in os.listdir(ref_folder) if f.lower().endswith(".png")])
+    if not ref_files:
+        print(f"[ERROR] El usuario {ref_user} no tiene imágenes refinadas")
+        return
+
+    ref_img_path = os.path.join(ref_folder, ref_files[0])
+    img_ref = cv.imread(ref_img_path, cv.IMREAD_GRAYSCALE)
+    if img_ref is None:
+        print(f"[ERROR] No se pudo cargar la imagen de referencia: {ref_img_path}")
+        return
+
+    # Invertir referencia
+    img_ref_inv = cv.bitwise_not(img_ref)
+
+    # Crear detector SIFT
+    sift = cv.SIFT_create(
+        nfeatures=nfeatures,
+        contrastThreshold=contrastThreshold,
+        edgeThreshold=edgeThreshold,
+        sigma=sigma,
+    )
+
+    kp_ref, des_ref = sift.detectAndCompute(img_ref_inv, None)
+    if des_ref is None:
+        print(f"[ERROR] Usuario {ref_user}: no hay suficientes descriptores en la huella de referencia")
+        return
+
+    print(f"\n=== Comparando huella de referencia de {ref_user} con el resto ===")
+
+    # Recorrer usuarios
+    for user in os.listdir(db_path):
+
+        # Saltamos el usuario de referencia
+        if user == ref_user:
+            continue
+
+        folder = os.path.join(out_path, user, "refinadas")
+        if not os.path.isdir(folder):
+            continue
+
+        files = sorted([f for f in os.listdir(folder) if f.lower().endswith(".png")])
+        if not files:
+            continue
+
+        # Imagen a comparar
+        img_path = os.path.join(folder, files[0])
+        img = cv.imread(img_path, cv.IMREAD_GRAYSCALE)
+        if img is None:
+            continue
+
+        # Invertir
+        img_inv = cv.bitwise_not(img)
+
+        kp, des = sift.detectAndCompute(img_inv, None)
+        if des is None:
+            print(f"[{ref_user} vs {user}] No hay descriptores → NO MATCH (correcto)")
+            continue
+
+        # Matcher + Lowe Ratio
+        bf = cv.BFMatcher()
+        matches = bf.knnMatch(des_ref, des, k=2)
+
+        good = [m for m, n in matches if m.distance < 0.70 * n.distance]
+
+        if len(good) < 4:
+            print(f"[{ref_user} vs {user}] Few matches ({len(good)}) → NO MATCH (correcto)")
+            continue
+
+        # RANSAC
+        src = np.float32([kp_ref[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+        dst = np.float32([kp[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+
+        M, mask = cv.findHomography(src, dst, cv.RANSAC, 8.0)
+        if mask is None:
+            print(f"[{ref_user} vs {user}] Sin homografía → NO MATCH (correcto)")
+            continue
+
+        inliers = int(mask.sum())
+        ratio = inliers / len(good) * 100
+
+        # Decisión final
+        if inliers >= 4 and ratio >= 25:
+            print(f"[{ref_user} vs {user}] MATCH (INCORRECTO: parecen la misma persona)")
+        else:
+            print(f"[{ref_user} vs {user}] NO MATCH (correcto)")
+
