@@ -33,3 +33,8 @@ El último paso del preprocesado es refinar la región de interés. El objetivo 
 
 ## Extracción de características
 Trabajando en ello...
+
+## Ejecución
+```
+python main.py
+```
