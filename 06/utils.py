@@ -1,3 +1,4 @@
+from fileinput import filename
 import os
 import cv2 as cv
 import numpy as np
@@ -128,19 +129,16 @@ def realzar_crestas(db_path, out_path):
 
 # PREPROCESADO: Refinar la ROI
 def refinar_crestas(db_path, out_path):
-    """
-    Refina las imágenes generadas por Sobel eliminando bordes falsos y ruido periférico.
-    Invierte los colores (fondo blanco, crestas negras) para mejor detección SIFT.
-    Guarda los resultados en out_path/<user>/refinadas
-    """
     users = os.listdir(db_path)
+
     for user in users:
         user_folder = os.path.join(out_path, user, "sobel")
         if not os.path.isdir(user_folder):
             continue
 
-        image_files = [f for f in os.listdir(user_folder) if f.lower().endswith('.png')]
-        if len(image_files) == 0:
+        image_files = [f for f in os.listdir(user_folder)
+                       if f.lower().endswith(".png")]
+        if not image_files:
             continue
 
         out_dir = os.path.join(out_path, user, "refinadas")
@@ -149,53 +147,106 @@ def refinar_crestas(db_path, out_path):
         for filename in image_files:
             img_path = os.path.join(user_folder, filename)
             image = cv.imread(img_path, cv.IMREAD_GRAYSCALE)
-            
-            if image is None or image.size == 0:
-                print(f"(i) Imagen no legible: {filename}")
+            if image is None:
                 continue
 
-            # --- PASO 1: Eliminar bordes de la imagen (recorte interno) ---
             h, w = image.shape
-            margin = int(min(h, w) * 0.05)  # 5% de margen
-            cropped = image[margin:h-margin, margin:w-margin]
-
-            # --- PASO 2: Operaciones morfológicas para limpiar ruido ---
-            # Apertura: elimina puntos blancos aislados (ruido)
-            kernel_open = cv.getStructuringElement(cv.MORPH_ELLIPSE, (3, 3))
-            opened = cv.morphologyEx(cropped, cv.MORPH_OPEN, kernel_open, iterations=1)
-            
-            # Cierre: conecta líneas de crestas rotas
-            kernel_close = cv.getStructuringElement(cv.MORPH_ELLIPSE, (2, 2))
-            closed = cv.morphologyEx(opened, cv.MORPH_CLOSE, kernel_close, iterations=1)
-
-            # --- PASO 3: Adelgazamiento alternativo (sin ximgproc) ---
-            # Erosión suave para reducir grosor de crestas
-            kernel_thin = cv.getStructuringElement(cv.MORPH_CROSS, (3, 3))
-            refined = cv.morphologyEx(closed, cv.MORPH_ERODE, kernel_thin, iterations=1)
-
-            # --- PASO 4: Filtrado de componentes pequeños ---
-            num_labels, labels, stats, _ = cv.connectedComponentsWithStats(refined, connectivity=8)
-            min_size = 50  # píxeles mínimos para considerar válido
-            
-            mask = np.zeros_like(refined)
-            for i in range(1, num_labels):  # Ignorar el fondo (label 0)
-                if stats[i, cv.CC_STAT_AREA] >= min_size:
-                    mask[labels == i] = 255
-
-            # --- PASO 5: INVERTIR COLORES (fondo blanco, crestas negras) ---
-            refinada = cv.bitwise_not(mask)
-
-            # --- PASO 6 (OPCIONAL): Rellenar bordes con blanco ---
-            # Crea un borde blanco alrededor para eliminar cualquier resto negro en márgenes
-            border_size = 10
-            refinada = cv.copyMakeBorder(
-                refinada, 
-                border_size, border_size, border_size, border_size,
-                cv.BORDER_CONSTANT, 
-                value=255  # Blanco
-            )
-
-            # --- PASO 7: Guardar resultado ---
+            pct = 0.03           # 3% de cada lado (ajustable)
+            m = int(min(h, w) * pct)
+            crop = image[m:h-m, m:w-m]
+            kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, (3, 3))
+            clean = cv.morphologyEx(crop, cv.MORPH_OPEN, kernel, iterations=1)
+            clean = cv.medianBlur(clean, 3)
+            refinada = cv.normalize(clean, None, 0, 255, cv.NORM_MINMAX)
             cv.imwrite(os.path.join(out_dir, filename), refinada)
 
-        print(f"[{user}] refinadas guardadas en '{out_dir}'")
+# SIFT : Comparar huellas del mismo usuario
+def comparar_huellas_mismo_usuario(
+    db_path,
+    out_path,
+    nfeatures=6000,
+    contrastThreshold=0.01,
+    edgeThreshold=10,
+    sigma=1.4,
+):
+    users = os.listdir(db_path)
+
+    for user in users:
+        folder = os.path.join(out_path, user, "refinadas")
+        if not os.path.isdir(folder):
+            continue
+
+        files = [f for f in os.listdir(folder) if f.lower().endswith(".png")]
+        if len(files) < 2:
+            continue
+
+        img1 = cv.imread(os.path.join(folder, files[0]), cv.IMREAD_GRAYSCALE)
+        img2 = cv.imread(os.path.join(folder, files[1]), cv.IMREAD_GRAYSCALE)
+        if img1 is None or img2 is None:
+            continue
+
+        # Invertir imágenes
+        img1_inv = cv.bitwise_not(img1)
+        img2_inv = cv.bitwise_not(img2)
+
+        # SIFT
+        sift = cv.SIFT_create(
+            nfeatures=nfeatures,
+            contrastThreshold=contrastThreshold,
+            edgeThreshold=edgeThreshold,
+            sigma=sigma,
+        )
+
+        kp1, des1 = sift.detectAndCompute(img1_inv, None)
+        kp2, des2 = sift.detectAndCompute(img2_inv, None)
+
+        if des1 is None or des2 is None:
+            print(f"\nUsuario {user}: No hay suficientes descriptores")
+            continue
+
+        # Matcher
+        bf = cv.BFMatcher()
+        matches = bf.knnMatch(des1, des2, k=2)
+
+        # Lowe Ratio
+        good = [m for m, n in matches if m.distance < 0.80 * n.distance]
+
+        if len(good) < 8:
+            print(f"\nUsuario {user}: Muy pocos matches")
+            continue
+
+        # RANSAC para filtrar inliers
+        src = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1,1,2)
+        dst = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1,1,2)
+
+        M, mask = cv.findHomography(src, dst, cv.RANSAC, 5.0)
+        if mask is None:
+            print(f"\nUsuario {user}: No homografía válida")
+            continue
+
+        inliers = mask.sum()
+        ratio = inliers / len(good) * 100
+        print(f"\nUsuario {user}: inliers={inliers}, ratio={ratio:.1f}%")
+
+        # Decisión final
+        if inliers >= 8 and ratio >= 40:
+            print("MATCH - Huellas coinciden")
+        else:
+            print("NO MATCH - Pocos inliers")
+
+        # Visualización de matches
+        inlier_matches = [
+            good[i] for i in range(len(good)) if mask[i]
+        ]
+
+        vis = cv.drawMatches(
+            img1, kp1,
+            img2, kp2,
+            inlier_matches[:25],
+            None,
+            flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS,
+        )
+
+        cv.imshow(f"Matches entre huellas - {user}", vis)
+        cv.waitKey(0)
+        cv.destroyAllWindows()

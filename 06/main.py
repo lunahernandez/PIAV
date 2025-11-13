@@ -4,6 +4,7 @@ from utils import (
     aplicar_filtro_bilateral,
     realzar_crestas,
     refinar_crestas,
+    comparar_huellas_mismo_usuario,
 )
 
 def main():
@@ -14,7 +15,7 @@ def main():
     print(20*"=")
 
     print("Paso 1. Buscar y segmentar la ROI")
-    recortar_roi(DB_PATH, OUT_PATH, ventana=500, paso=15)
+    recortar_roi(DB_PATH, OUT_PATH, ventana=500, paso=15)  
 
     print("Paso 2. Ecualizar y normalizar el histograma")
     ecualizar_histograma(DB_PATH, OUT_PATH)
@@ -31,6 +32,11 @@ def main():
     print(20*"-")
     print("Preprocesado finalizado")
     print(20*"-")
+    
+    print("\n" + "="*60)
+    print("COMPARANDO HUELLAS CON SIFT")
+    print("="*60)
+    comparar_huellas_mismo_usuario(DB_PATH, OUT_PATH)
 
 if __name__ == "__main__":
     main()
