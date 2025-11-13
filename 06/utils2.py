@@ -131,7 +131,7 @@ def realzar_crestas(db_path, out_path):
             cv.imwrite(os.path.join(out_dir, filename), sobel_8u)
 
 # PREPROCESADO: Refinar la ROI
-def refinar_crestas(db_path, out_path):
+def refinar_roi(db_path, out_path):
     users = os.listdir(db_path)
 
     for user in users:
@@ -162,130 +162,22 @@ def refinar_crestas(db_path, out_path):
             clean = cv.medianBlur(clean, 3)
             refinada = cv.normalize(clean, None, 0, 255, cv.NORM_MINMAX)
             cv.imwrite(os.path.join(out_dir, filename), refinada)
+import os
+import cv2 as cv
+import numpy as np
 
 # SIFT : Comparar huellas del mismo usuario
-def comparar_huellas_mismo_usuario(
+def comparar_huellas(
     db_path,
     out_path,
-    nfeatures=15000,
+    nfeatures=1500,
     contrastThreshold=0.01,
     edgeThreshold=10,
     sigma=1.4,
 ):
     users = os.listdir(db_path)
 
-    for user in users:
-        folder = os.path.join(out_path, user, "sobel")
-        if not os.path.isdir(folder):
-            continue
-
-        files = [f for f in os.listdir(folder) if f.lower().endswith(".png")]
-        if len(files) < 2:
-            continue
-
-        img1 = cv.imread(os.path.join(folder, files[0]), cv.IMREAD_GRAYSCALE)
-        img2 = cv.imread(os.path.join(folder, files[1]), cv.IMREAD_GRAYSCALE)
-        if img1 is None or img2 is None:
-            continue
-
-        # Invertir imágenes
-        img1_inv = cv.bitwise_not(img1)
-        img2_inv = cv.bitwise_not(img2)
-
-        # SIFT
-        sift = cv.SIFT_create(
-            nfeatures=nfeatures,
-            contrastThreshold=contrastThreshold,
-            edgeThreshold=edgeThreshold,
-            sigma=sigma,
-        )
-
-        kp1, des1 = sift.detectAndCompute(img1_inv, None)
-        kp2, des2 = sift.detectAndCompute(img2_inv, None)
-
-        if des1 is None or des2 is None:
-            print(f"\nUsuario {user}: No hay suficientes descriptores")
-            continue
-
-        # Matcher
-        bf = cv.BFMatcher()
-        matches = bf.knnMatch(des1, des2, k=2)
-
-        # Lowe Ratio
-        good = [m for m, n in matches if m.distance < 0.70 * n.distance]
-
-        if len(good) < 4:
-            print(f"\nUsuario {user}: Muy pocos matches")
-            continue
-
-        # RANSAC para filtrar inliers
-        src = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1,1,2)
-        dst = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1,1,2)
-
-        M, mask = cv.findHomography(src, dst, cv.RANSAC, 8.0)
-        if mask is None:
-            print(f"\nUsuario {user}: No homografía válida")
-            continue
-
-        inliers = mask.sum()
-        ratio = inliers / len(good) * 100
-        print(f"\nUsuario {user}: inliers={inliers}, ratio={ratio:.1f}%")
-
-        # Decisión final
-        if inliers >= 4 and ratio >= 25:
-            print("MATCH - Huellas coinciden")
-        else:
-            print("NO MATCH - Pocos inliers")
-
-        # Visualización de matches
-        inlier_matches = [
-            good[i] for i in range(len(good)) if mask[i]
-        ]
-
-        vis = cv.drawMatches(
-            img1, kp1,
-            img2, kp2,
-            inlier_matches[:25],
-            None,
-            flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS,
-        )
-
-        cv.imshow(f"Matches entre huellas - {user}", vis)
-        cv.waitKey(0)
-        cv.destroyAllWindows()
-
-def comparar_primera_huella_con_otros_usuarios(
-    db_path,
-    out_path,
-    ref_user,
-    nfeatures=15000,
-    contrastThreshold=0.01,
-    edgeThreshold=10,
-    sigma=1.4,
-):
-
-    # Carpeta de huellas refinadas del usuario de referencia
-    ref_folder = os.path.join(out_path, ref_user, "sobel")
-    if not os.path.isdir(ref_folder):
-        print(f"[ERROR] No existe carpeta de refinadas para el usuario de referencia: {ref_folder}")
-        return
-
-    # Imagen de referencia
-    ref_files = sorted([f for f in os.listdir(ref_folder) if f.lower().endswith(".png")])
-    if not ref_files:
-        print(f"[ERROR] El usuario {ref_user} no tiene imágenes refinadas")
-        return
-
-    ref_img_path = os.path.join(ref_folder, ref_files[0])
-    img_ref = cv.imread(ref_img_path, cv.IMREAD_GRAYSCALE)
-    if img_ref is None:
-        print(f"[ERROR] No se pudo cargar la imagen de referencia: {ref_img_path}")
-        return
-
-    # Invertir referencia
-    img_ref_inv = cv.bitwise_not(img_ref)
-
-    # Crear detector SIFT
+    # Crear SIFT una sola vez
     sift = cv.SIFT_create(
         nfeatures=nfeatures,
         contrastThreshold=contrastThreshold,
@@ -293,67 +185,129 @@ def comparar_primera_huella_con_otros_usuarios(
         sigma=sigma,
     )
 
-    kp_ref, des_ref = sift.detectAndCompute(img_ref_inv, None)
-    if des_ref is None:
-        print(f"[ERROR] Usuario {ref_user}: no hay suficientes descriptores en la huella de referencia")
-        return
+    for user in users:
+        print(20 * "=")
+        print(f"Usuario: {user}")
+        print(20 * "=")
 
-    print(f"\n=== Comparando huella de referencia de {ref_user} con el resto ===")
-
-    # Recorrer usuarios
-    for user in os.listdir(db_path):
-
-        # Saltamos el usuario de referencia
-        if user == ref_user:
-            continue
-
-        folder = os.path.join(out_path, user, "refinadas")
+        folder = os.path.join(out_path, user, "sobel")
         if not os.path.isdir(folder):
             continue
 
         files = sorted([f for f in os.listdir(folder) if f.lower().endswith(".png")])
-        if not files:
+        if len(files) < 2:
             continue
 
-        # Imagen a comparar
-        img_path = os.path.join(folder, files[0])
-        img = cv.imread(img_path, cv.IMREAD_GRAYSCALE)
-        if img is None:
-            continue
+        for file in files:
+            filename1 = file
+            path1 = os.path.join(folder, file)
+            img1 = cv.imread(path1, cv.IMREAD_GRAYSCALE)
 
-        # Invertir
-        img_inv = cv.bitwise_not(img)
+            if img1 is None:
+                print(f"(ERROR) {filename1}: no se pudo leer {path1}")
+                continue
 
-        kp, des = sift.detectAndCompute(img_inv, None)
-        if des is None:
-            print(f"[{ref_user} vs {user}] No hay descriptores → NO MATCH (correcto)")
-            continue
+            # Invertir y calcular SIFT una vez por imagen 1
+            img1_inv = cv.bitwise_not(img1)
+            kp1, des1 = sift.detectAndCompute(img1_inv, None)
+            if des1 is None:
+                print(f"(ERROR) {filename1}: sin descriptores SIFT")
+                continue
 
-        # Matcher + Lowe Ratio
-        bf = cv.BFMatcher()
-        matches = bf.knnMatch(des_ref, des, k=2)
+            for user2 in users:
+                folder2 = os.path.join(out_path, user2, "sobel")
+                if not os.path.isdir(folder2):
+                    continue
 
-        good = [m for m, n in matches if m.distance < 0.70 * n.distance]
+                files2 = sorted([f for f in os.listdir(folder2) if f.lower().endswith(".png")])
+                if len(files2) < 2:
+                    continue
 
-        if len(good) < 4:
-            print(f"[{ref_user} vs {user}] Few matches ({len(good)}) → NO MATCH (correcto)")
-            continue
+                for file2 in files2:
+                    filename2 = file2
+                    path2 = os.path.join(folder2, file2)
 
-        # RANSAC
-        src = np.float32([kp_ref[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-        dst = np.float32([kp[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+                    # Si no quieres comparar una imagen consigo misma, descomenta:
+                    # if user == user2 and filename1 == filename2:
+                    #     print(f"(INFO) {filename1}-{filename2}: comparación consigo misma, se omite")
+                    #     continue
 
-        M, mask = cv.findHomography(src, dst, cv.RANSAC, 8.0)
-        if mask is None:
-            print(f"[{ref_user} vs {user}] Sin homografía → NO MATCH (correcto)")
-            continue
+                    img2 = cv.imread(path2, cv.IMREAD_GRAYSCALE)
+                    if img2 is None:
+                        print(f"(ERROR) {filename1}-{filename2}: no se pudo leer {path2}")
+                        continue
 
-        inliers = int(mask.sum())
-        ratio = inliers / len(good) * 100
+                    img2_inv = cv.bitwise_not(img2)
+                    kp2, des2 = sift.detectAndCompute(img2_inv, None)
+                    if des2 is None:
+                        print(f"(ERROR) {filename1}-{filename2}: sin descriptores SIFT en la segunda imagen")
+                        continue
 
-        # Decisión final
-        if inliers >= 4 and ratio >= 25:
-            print(f"[{ref_user} vs {user}] MATCH (INCORRECTO: parecen la misma persona)")
-        else:
-            print(f"[{ref_user} vs {user}] NO MATCH (correcto)")
+                    # Matcher + Lowe ratio (seguro)
+                    bf = cv.BFMatcher()
+                    matches = bf.knnMatch(des1, des2, k=2)
 
+                    good = []
+                    for par in matches:
+                        if len(par) < 2:
+                            continue
+                        m, n = par
+                        if m.distance < 0.70 * n.distance:
+                            good.append(m)
+
+                    if len(good) < 4:
+                        # Ya contamos esto como NO MATCH y lo marcamos como CORRECTO/ERROR según prefijo
+                        mismo_prefijo = (filename1[:8] == filename2[:8])
+                        if mismo_prefijo:
+                            print(f"(ERROR) {filename1}-{filename2} -> NO MATCH (muy pocos matches buenos)")
+                        else:
+                            print(f"(CORRECTO) {filename1}-{filename2} -> NO MATCH (muy pocos matches buenos)")
+                        continue
+
+                    # RANSAC para filtrar inliers
+                    src = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+                    dst = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+
+                    M, mask = cv.findHomography(src, dst, cv.RANSAC, 8.0)
+                    if mask is None:
+                        mismo_prefijo = (filename1[:8] == filename2[:8])
+                        if mismo_prefijo:
+                            print(f"(ERROR) {filename1}-{filename2} -> NO MATCH (no se pudo estimar homografía)")
+                        else:
+                            print(f"(CORRECTO) {filename1}-{filename2} -> NO MATCH (no se pudo estimar homografía)")
+                        continue
+
+                    inliers = int(mask.sum())
+                    ratio = inliers / len(good) * 100.0
+
+                    # Decisión final
+                    mismo_prefijo = (filename1[:8] == filename2[:8])
+                    if inliers >= 4 and ratio >= 25 and mismo_prefijo:
+                        print(f"(CORRECTO) {filename1}-{filename2} -> MATCH "
+                              f"(inliers={inliers}, ratio={ratio:.1f}%)")
+                    elif inliers >= 4 and ratio >= 25 and not mismo_prefijo:
+                        print(f"(ERROR) {filename1}-{filename2} -> MATCH "
+                              f"(inliers={inliers}, ratio={ratio:.1f}%)")
+                    elif (inliers < 4 or ratio < 25) and not mismo_prefijo:
+                        print(f"(CORRECTO) {filename1}-{filename2} -> NO MATCH "
+                              f"(inliers={inliers}, ratio={ratio:.1f}%)")
+                    else:
+                        print(f"(ERROR) {filename1}-{filename2} -> NO MATCH "
+                              f"(inliers={inliers}, ratio={ratio:.1f}%)")
+
+                    # Visualización de matches (solo inliers)
+                    inlier_matches = [
+                        good[i] for i in range(len(good)) if mask[i, 0]
+                    ]
+
+                    vis = cv.drawMatches(
+                        img1, kp1,
+                        img2, kp2,
+                        inlier_matches[:25],
+                        None,
+                        flags=cv.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS,
+                    )
+
+                    #cv.imshow(f"Matches entre huellas - {user}", vis)
+                    cv.waitKey(0)
+                    cv.destroyAllWindows()
