@@ -1,35 +1,35 @@
-# Hipótesis no IA
-## Descripción 
-Comparar las huellas digitales de diferentes imágenes del mismo usuario para evaluar la consistencia y precisión del sistema de reconocimiento de huellas digitales. Se utilizarán imágenes de huellas digitales capturadas en diferentes condiciones (ángulos, presión, humedad) para verificar si el sistema puede identificar correctamente al mismo usuario. Se usarán diferentes preprocesamientos y parámetros del algoritmo SIFT para optimizar la comparación.
+# Hipótesis A: sin IA
+**Autores**: Luna Yue Hernández Guerra y Jorge Lorenzo Lorenzo
+## Preprocesado
+A continuación, se exponen los diferentes pasos del preprocesado de las imágenes llevados a cabo. Estos pasos son secuenciales, es decir, cada uno se aplica a los resultados del paso anterior. Los pasos son los siguientes:
+1. Buscar y segmentar la ROI
+2. Ecualizar y normalizar el histograma
+3. Aplicar un filtro bilateral
+4. Aplicar un realce de crestas
+5. Refinar la ROI
 
-## Código
-### Utilidades
-En el archivo `utils.py`, se añade toda la parte de utilidades necesarias para llevar a cabo la comparación de huellas digitales del mismo usuario y el preprocesamiento de las imágenes. Se va a explicar el uso de cada función añadida según el orden en el que aparecen en el código.
+### Buscar y segmentar la ROI
+El objetivo del primer paso del preprocesado es obtener el núcleo de la huella. Según el estudio de Simón-Zorita, este paso es realmente importante para conseguir un buen preprocesado de huellas.
 
-**recortar_roi** : Esta función permite recortar una región de interés (ROI) de una imagen dada. Se utiliza para aislar la parte relevante de la huella digital antes de procesarla.
+Para ello, creamos dos funciones: `mejor_roi()` y `recortar_roi()`.
+- `mejor_roi()`: Esta función obtiene la región de interés de una imagen. Dicha región de interés se define como la región de tamaño `ventana`x`ventana` donde más píxeles negros hay. Para ello, se recorre la imagen con un kernel de tamaño `ventana`x`ventana` dando pasos de `paso` píxeles y se obtiene la suma de píxeles negros. Una vez recorrida toda la imagen, se devuelven las coordenadas donde inicia la ventana y el ancho y alto de la misma, con lo que se pueden calcular las coordenadas de la región con mayor número de píxeles negros.
+- `recortar_roi()`: Esta función guarda las regiones de interés de todas las imágenes de la base de datos que se encuentra en la ruta `db_path` en disco, en un directorio `out_path` especificado. Para ello, hace uso de la función `mejor_roi()` tras convertir las imágenes a escala de grises y binarizarlas usando `cv.THRESH_BINARY + cv.THRESH_OTSU`. La binarización combinada es sugerencia de ChatGPT para que el umbral se establezca dinámicamente.
 
-**mejor_roi_por_negros** : Esta función selecciona la mejor región de interés (ROI) basada en la cantidad de píxeles negros presentes, lo que indica la calidad y relevancia de la región para el análisis, ya que se considera que son las regiones donde aparecen más píxeles negros. Devuelve una región óptima.
+### Ecualizar y normalizar el histograma
+El siguiente paso a realizar es ecualizar y normalizar el histograma. Con esto, queremos mejorar el contraste de la imagen. Esta técnica la aprendimos en prácticas anteriores donde ecualizar el histograma de una imagen nos permitía encontrar un equilibrio entre brillos y sombras. Para ello,  usamos la función `ecualizar_histograma()`.
+- `ecualizar_histograma()`: Esta función, para cada imagen de la base de datos que se encuentra en `db_path`, convierte la imagen a escala de grises, ecualiza el histograma con `cv.equalizeHist()` y la guarda en disco en el directorio `out_path` especificado.
 
-**ecualizar_histograma** : Esta función es un preprocesa que lo que hace es mejorar el contraste resaltantes de las crestas y sus valles, con el objetivo de tener imágenes uniformes y más fáciles de comparar con SIFT. Reparte las zonas oscuras y claras.
+### Aplicar un filtro bilateral
+A continuación, procedemos con la aplicación del filtro bilateral, cuyo objetivo es eliminar ruido pero no las texturas. Este procedimiento lo aprendimos en prácticas anteriores donde vimos la efectividad de los distintos tipos de filtros. De dicha práctica, sacamos la conclusión de que si no queremos difuminar demasiado la imagen, debíamos utilizar valores bajos de *sigma*. Para aplicarlo, definimos la función `aplicar_filtro_bilateral()`.
+- `aplicar_filtro_bilateral()`: Esta función convierte cada imagen de la base de datos ubicada en `db_path` en escala de grises y le aplica el filtro bilateral con la función `cv.bilateralFilter`. Los resultados los guarda en disco en el directorio `out_path` especificado.
 
-**aplicar_filtro_bilateral** : Esta función aplica un filtro bilateral a la imagen para reducir el ruido mientras se preservan los bordes, lo que es útil para mantener los detalles importantes de las crestas y valles en la huella digital durante el preprocesamiento.
+### Aplicar un realce de crestas
+El siguiente paso, es realizar el realce de crestas con operadores de bordes Sobel con el fin de poder discriminar mejor entre crestas y valles. Este paso es una implementación de la teoría explicada en la primera parte de la asignatura. Para ello, creamos la función `realzar_crestas()`.
+- `realzar_crestas()`:  Esta función convierte a escala de grises cada imagen de la base de datos ubicada en `db_path` y le aplica los operadores de Sobel, tanto verticales como horizontales. La ponderación de cada gradiente la obtuvimos de la [documentación de OpenCV](#https://docs.opencv.org/4.x/d2/d2c/tutorial_sobel_derivatives.html). Por último, se normaliza la imagen resultante y se pasa a `CV_8U` para solventar el *warning* `[ WARN:0@0.762] global loadsave.cpp:1063 cv::imwrite_ Unsupported depth image for selected encoder is fallbacked to CV_8U.`. Esto fue la solución al *warning* que nos dio ChatGPT. Los resultados los guarda en disco en el directorio `out_path` especificado.
 
-**realzar_crestas** : Esta función realza las crestas de la huella digital para mejorar la visibilidad y facilitar la comparación, eso lo hace usando Sovel con el objetivo de marcarc con mayor fuerza los bordes verticales de la imagen, pero en la práctica esto puede dificultar el trabajo de SIFT.
+### Refinar la ROI
+El último paso del preprocesado es refinar la región de interés. El objetivo es eliminar los bordes falsos que se hayan podido detectar en el paso anterior. Este procedimiento es una idea del artículo de Simón-Zorita y se lo pedimos al ChatGPT. La función obtenida es `refinar_roi()`.
+- `refinar_roi()`: Esta función recorta el 8% de los márgenes de la imagen con el fin de eliminar los bordes que no pertenecen a la huella. Seguidamente, elimina el posible ruido más pequeño que el `kernel` y luego aplica un filtro mediano, que trata de eliminar el ruido sal-pimienta. Finalmente, normaliza la imagen. Este procedimiento lo aplica a todas las imágenes de la base de datos que se encuentra en `db_path` y guarda los resultados en disco en el directorio `out_path` especificado. 
 
-A partir de que empezamos a usar SIFT al comparar las huellass nos dimos cuenta que las imágenes bimarizadas y con poca textura no son adecuadas para SIFT, y nos dimos cuentas que habría 2 caminos a seguir.
-
-1. Cambiar la estructura del preprocesado para que las imágenes tengan más textura y SIFT pueda trabajar mejor.
-2. Cambiar el SIFT por un detector de minucias, utilizando `kernels` para detectar comparativas entre las crestas y valles.
-
-**refinar_crestas**  : Esta función refina las crestas aplicando un procesado morfológico para mejorar la definición de las crestas y valles en la huella digital,, también tiene un proceso de recorte de borde, y apertura morfológica, filtrado de mediana y normalización. Aunque mejora la apariencia visual del resultado, estas imágenes no son adeciadas para SIFT sino más bien para detectores de minucias.
-
-- Morfológico en apertura: elimina pequeñas imperfecciones en las crestas y valles.
-
-**comparar_huellas_mismo_usuario** : Esta función se encarga de comparar dos huellas del mismo usuario utilizando el algoritmo SIFT. Además, se incorpora RANSAC, que mejora la robustez del proceso al eliminar coincidencias erróneas mediante una validación geométrica. Gracias a esto, solo se consideran válidos los puntos que mantienen una correspondencia coherente entre ambas imágenes.
-Si el número de coincidencias válidas (inliers) supera un umbral definido, se considera que las huellas pertenecen al mismo usuario.
-
-También se aplica el Lowe Ratio, una técnica utilizada para filtrar coincidencias débiles o ambiguas entre descriptores SIFT. Este criterio ayuda a quedarse únicamente con los matches más confiables, incrementando la precisión de la comparación.
-
-## Ejecución
-Para ejecutar se utiliza el `main.py` con todas las funciones necesarias para llevar a cabo la comparación de huellas digitales del mismo usuario, utilizando las diferentes funciones añadidas en `utils.py`. En la carpeta `output` se guardan las imagenes filtradas según cada preprocesado y luego por ventana de OpenCV y por consola se ve todo lo relacionado con las comparaciones.
-
+## Extracción de características
+Trabajando en ello...

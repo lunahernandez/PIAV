@@ -1,12 +1,10 @@
-from fileinput import filename
 import os
 import cv2 as cv
 import numpy as np
-from pathlib import Path
 
 
 # PREPROCESADO: Buscar y segmentar la ROI
-def mejor_roi_por_negros(image, ventana=500, paso=20):
+def mejor_roi(image, ventana=500, paso=20):
     H, W = image.shape
     w = min(ventana, W, H)
     h = min(ventana, W, H)
@@ -49,7 +47,7 @@ def recortar_roi(db_path, out_path, ventana=500, paso=15):
 
             gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
             _, image = cv.threshold(gray, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU) # Otsu: sugerencia de GPT
-            x, y, w, h = mejor_roi_por_negros(image, ventana=ventana, paso=paso)
+            x, y, w, h = mejor_roi(image, ventana=ventana, paso=paso)
             roi = img[y:y+h, x:x+w]
             cv.imwrite(os.path.join(out_dir, filename), roi)
 
@@ -132,7 +130,7 @@ def realzar_crestas(db_path, out_path):
             cv.imwrite(os.path.join(out_dir, filename), sobel_8u)
 
 # PREPROCESADO: Refinar la ROI
-def refinar_crestas(db_path, out_path):
+def refinar_roi(db_path, out_path):
     users = os.listdir(db_path)
 
     for user in users:
@@ -155,7 +153,7 @@ def refinar_crestas(db_path, out_path):
                 continue
 
             h, w = image.shape
-            pct = 0.03           # 3% de cada lado (ajustable)
+            pct = 0.08
             m = int(min(h, w) * pct)
             crop = image[m:h-m, m:w-m]
             kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, (3, 3))
