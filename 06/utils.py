@@ -124,10 +124,11 @@ def realzar_crestas(db_path, out_path):
             gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
             sobelx = cv.Sobel(gray, cv.CV_64F, 1, 0, ksize=3)
             sobely = cv.Sobel(gray, cv.CV_64F, 0, 1, ksize=3)
-
-            sobel = cv.magnitude(sobelx, sobely)
-            # _, bw = cv.threshold(sobel, 0, 255, cv.THRESH_BINARY_INV)
-            sobel_8u = cv.normalize(sobel, None, 0, 255, cv.NORM_MINMAX).astype(np.uint8) # Código de GPT para solventar warning: [ WARN:0@0.762] global loadsave.cpp:1063 cv::imwrite_ Unsupported depth image for selected encoder is fallbacked to CV_8U.
+            # https://docs.opencv.org/4.x/d2/d2c/tutorial_sobel_derivatives.html
+            abs_grad_x = cv.convertScaleAbs(sobelx)
+            abs_grad_y = cv.convertScaleAbs(sobely)
+            grad = cv.addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0)
+            sobel_8u = cv.normalize(grad, None, 0, 255, cv.NORM_MINMAX).astype(np.uint8) # Código de GPT para solventar warning: [ WARN:0@0.762] global loadsave.cpp:1063 cv::imwrite_ Unsupported depth image for selected encoder is fallbacked to CV_8U.
             cv.imwrite(os.path.join(out_dir, filename), sobel_8u)
 
 # PREPROCESADO: Refinar la ROI
