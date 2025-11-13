@@ -4,8 +4,6 @@ from utils import (
     aplicar_filtro_bilateral,
     realzar_crestas,
     refinar_crestas,
-    comparar_huellas_mismo_usuario,
-    comparar_primera_huella_con_otros_usuarios
 )
 
 def main():
@@ -33,16 +31,6 @@ def main():
     print(20*"-")
     print("Preprocesado finalizado")
     print(20*"-")
-    
-    print("\n" + "="*60)
-    print("COMPARANDO HUELLAS CON SIFT")
-    print("="*60)
-    comparar_huellas_mismo_usuario(DB_PATH, OUT_PATH)
-
-    print("\n" + "="*60)  
-    print("COMPARANDO PRIMERA HUELLA DE CADA USUARIO CON OTROS USUARIOS")
-    print("="*60)
-    comparar_primera_huella_con_otros_usuarios(DB_PATH, OUT_PATH, ref_user="crd_0811f")
 
 if __name__ == "__main__":
     main()
