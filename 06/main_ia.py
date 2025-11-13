@@ -1,6 +1,4 @@
 import os
-import torch
-
 from utils_ia import (
     SiameseCNN,
     entrenar_siamese,
@@ -8,58 +6,39 @@ from utils_ia import (
     comparar_entre_usuarios_ia
 )
 
-# ============================================================
-# MAIN
-# ============================================================
-
 def main():
 
-    # ------------------------------
-    # Rutas
-    # ------------------------------
-    out_path = "06/output"    # carpeta donde tienes las huellas refinadas por usuario
+    out_path = "06/output"
 
     if not os.path.isdir(out_path):
         raise ValueError(f"La ruta {out_path} no existe. Coloca OUT en el mismo nivel que el main.")
 
-    # ------------------------------
-    # Crear el modelo
-    # ------------------------------
     print("\n===== CREANDO MODELO SIAMESA =====")
+    print("Paso 1. Crear el modelo siamesa")
     modelo = SiameseCNN(embedding_dim=128)
 
-    # ------------------------------
-    # ENTRENAR EL MODELO
-    # ------------------------------
-    print("\n===== INICIANDO ENTRENAMIENTO =====")
+    print("Paso 2. Entrenar el modelo siamesa")
     entrenar_siamese(
         modelo=modelo,
         out_path=out_path,
-        epochs=10,        # puedes subirlo
+        epochs=10,
         lr=1e-4
     )
 
-    # ------------------------------
-    # COMPARAR HUELLAS DEL MISMO USUARIO
-    # ------------------------------
-    print("\n===== COMPARACIÓN MISMO USUARIO =====")
+    print("Paso 3. Comparar imágenes del mismo usuario")
     comparar_mismo_usuario_ia(
         modelo=modelo,
         out_path=out_path,
-        umbral=0.35      # ajustable tras entrenar
+        umbral=0.35
     )
 
-    # ------------------------------
-    # COMPARAR HUELLAS ENTRE USUARIOS
-    # ------------------------------
-    print("\n===== COMPARACIÓN ENTRE USUARIOS =====")
+    print("Paso 4. Comparar entre usuarios")
     comparar_entre_usuarios_ia(
         modelo=modelo,
         out_path=out_path,
+        ref_user="crd_0811f",
         umbral=0.05
     )
 
-
-# Ejecutar
 if __name__ == "__main__":
     main()

@@ -6,31 +6,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
-
-# ============================================================
-# CARGAR IMAGEN
-# ============================================================
-
+# Cargar imagen
 def cargar_imagen(img_path, size=224):
-    """Carga imagen en escala de grises y la convierte a tensor"""
     img = cv.imread(img_path, cv.IMREAD_GRAYSCALE)
+
     if img is None:
         raise ValueError(f"No se pudo cargar: {img_path}")
-    
+
     img = cv.resize(img, (size, size))
     tensor = torch.tensor(img, dtype=torch.float32) / 255.0
 
-    # [1, H, W]  -> canales = 1
     return tensor.unsqueeze(0)
 
-
-# ============================================================
-# RED SIAMESA
-# ============================================================
-
+# Modelo Siamesa
 class SiameseCNN(nn.Module):
-    """Red Siamesa para comparar huellas"""
-    
+
     def __init__(self, embedding_dim=128):
         super().__init__()
         
@@ -62,14 +52,9 @@ class SiameseCNN(nn.Module):
     def forward(self, img1, img2):
         return self.forward_once(img1), self.forward_once(img2)
 
-
-# ============================================================
-# DATASET
-# ============================================================
-
+# Dataset de pares de huellas
 class FingerprintPairsDataset(Dataset):
-    """Dataset de pares de huellas (positivos y negativos)"""
-    
+
     def __init__(self, out_path):
         self.pairs = []
         self.labels = []
@@ -92,13 +77,13 @@ class FingerprintPairsDataset(Dataset):
             for u2 in usuarios[i+1:]:
                 f1 = os.path.join(out_path, u1, "refinadas")
                 f2 = os.path.join(out_path, u2, "refinadas")
-                
+
                 if not os.path.isdir(f1) or not os.path.isdir(f2):
                     continue
-                
+
                 imgs1 = sorted([f for f in os.listdir(f1) if f.endswith(".png")])
                 imgs2 = sorted([f for f in os.listdir(f2) if f.endswith(".png")])
-                
+
                 if imgs1 and imgs2:
                     self.pairs.append((os.path.join(f1, imgs1[0]), os.path.join(f2, imgs2[0])))
                     self.labels.append(0)
@@ -112,17 +97,11 @@ class FingerprintPairsDataset(Dataset):
         t2 = cargar_imagen(img2)
         return t1, t2, torch.tensor(self.labels[idx], dtype=torch.float32)
 
-
-# ============================================================
-# ENTRENAMIENTO
-# ============================================================
-
+# Entrenamiento del modelo siamesa
 def entrenar_siamese(modelo, out_path, epochs=5, lr=1e-4):
-    """Entrena la red siamesa"""
     
     dataset = FingerprintPairsDataset(out_path)
     dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
-    
     optimizer = torch.optim.Adam(modelo.parameters(), lr=lr)
     
     def contrastive_loss(e1, e2, y, margin=1.0):
@@ -149,23 +128,14 @@ def entrenar_siamese(modelo, out_path, epochs=5, lr=1e-4):
     print("Entrenamiento terminado.\n")
     modelo.eval()
 
-
-# ============================================================
-# DISTANCIA COSENO
-# ============================================================
-
+# Distancia coseno
 def distancia_coseno(e1, e2):
-    """Calcula distancia coseno entre embeddings"""
     sim = F.cosine_similarity(e1, e2)
     return 1 - sim.item()
 
 
-# ============================================================
-# COMPARACIÓN MISMO USUARIO
-# ============================================================
-
+# Comparación con huellas del mismo usuario
 def comparar_mismo_usuario_ia(modelo, out_path, umbral=0.35):
-    """Compara huellas del mismo usuario"""
     
     print("============================================================")
     print("COMPARACIÓN MISMO USUARIO (IA)")
@@ -182,8 +152,8 @@ def comparar_mismo_usuario_ia(modelo, out_path, umbral=0.35):
         if len(imgs) < 2:
             continue
         
-        t1 = cargar_imagen(os.path.join(folder, imgs[0]))  # [1, H, W]
-        t2 = cargar_imagen(os.path.join(folder, imgs[1]))  # [1, H, W]
+        t1 = cargar_imagen(os.path.join(folder, imgs[0]))
+        t2 = cargar_imagen(os.path.join(folder, imgs[1]))
 
         # Añadimos dimensión batch -> [1, 1, H, W]
         t1 = t1.unsqueeze(0)
@@ -197,23 +167,16 @@ def comparar_mismo_usuario_ia(modelo, out_path, umbral=0.35):
         
         print(f"\nUsuario {user}: Distancia={dist:.4f} - {match}")
 
-
-# ============================================================
-# COMPARACIÓN ENTRE USUARIOS
-# ============================================================
-
-def comparar_entre_usuarios_ia(modelo, out_path, umbral=0.35):
-    """Compara la primera imagen del usuario 1 con la primera imagen del resto"""
+# Comparación entre usuarios
+def comparar_entre_usuarios_ia(modelo, out_path, ref_user, umbral=0.35):
 
     usuarios = sorted(os.listdir(out_path))
-    if len(usuarios) < 2:
-        print("Se necesitan al menos 2 usuarios")
+
+    if ref_user not in usuarios:
+        print(f"ERROR: El usuario '{ref_user}' no existe en {out_path}")
+        print("Usuarios disponibles:", usuarios)
         return
 
-    # -----------------------------
-    # USUARIO DE REFERENCIA: PRIMERO
-    # -----------------------------
-    ref_user = usuarios[0]
     ref_folder = os.path.join(out_path, ref_user, "refinadas")
     ref_imgs = sorted([f for f in os.listdir(ref_folder) if f.endswith(".png")])
 
@@ -221,26 +184,26 @@ def comparar_entre_usuarios_ia(modelo, out_path, umbral=0.35):
         print(f"No hay imágenes en {ref_folder}")
         return
 
-    # Primera imagen del usuario referencia
     ref_tensor = cargar_imagen(os.path.join(ref_folder, ref_imgs[0]))
-    ref_tensor = ref_tensor.unsqueeze(0)  # [1, 1, H, W]
+    ref_tensor = ref_tensor.unsqueeze(0)
 
     with torch.no_grad():
         ref_emb = modelo.forward_once(ref_tensor)
 
     print(f"\nUsuario de referencia: {ref_user}\n")
+    print("Comparaciones con otros usuarios:")
 
-    # -----------------------------
-    # COMPARAR CON EL RESTO
-    # -----------------------------
-    for user in usuarios[1:]:  # <-- IMPORTANTE: empieza desde el segundo
+    # Comparar con otros usuarios
+    for user in usuarios:
+        if user == ref_user:
+            continue
+
         folder = os.path.join(out_path, user, "refinadas")
         imgs = sorted([f for f in os.listdir(folder) if f.endswith(".png")])
 
         if not imgs:
             continue
 
-        # Primera imagen del usuario comparado
         t = cargar_imagen(os.path.join(folder, imgs[0]))
         t = t.unsqueeze(0)
 
