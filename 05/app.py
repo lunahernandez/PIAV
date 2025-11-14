@@ -10,9 +10,9 @@ import cv2 as cv
 from utils import (
     DEFAULT_SIFT,
     imagen_to_bgr, bgr_to_rgb, to_gray,
-    extract_sift, estimate_geom, project_box, is_valid_quad,
+    extract_sift, estimate_geom, transform_roi_box, is_valid_poly,
     apply_transform, match_bf_crosscheck, match_knn_ratio,
-    draw_matches_panel,
+    draw_matches,
     affine_matrix_RS, affine_update_t_for_pivot, affine_matrix_realtime, apply_affine_realtime,
     apply_distortion
 )
@@ -350,24 +350,24 @@ with tab3:
                             good_n = len(matches)
 
                             if good_n >= min_matches:
-                                M, mask, inl, kind = estimate_geom(kp_roi, kp_t, matches, ransac_thresh=ransac)
+                                M, mask, inl, kind = estimate_geom(kp_roi, kp_t, matches, ransac_thresh=ransac, prefer_affine=True)
                                 inliers = inl
                                 if M is not None and inliers >= 4:
-                                    poly = project_box(M, kind, roi_gray.shape[:2])
-                                    if is_valid_quad(poly, img_t.shape):
+                                    poly = transform_roi_box(M, kind, roi_gray.shape[:2])
+                                    if is_valid_poly(poly, img_t.shape):
                                         status = "DETECTADA"
-                                        vis = draw_matches_panel(roi, img_t, kp_roi, kp_t, matches, topN=topN, poly_right=poly)
+                                        vis = draw_matches(roi, img_t, kp_roi, kp_t, matches, topN=topN, poly_right=poly)
                                     else:
-                                        vis = draw_matches_panel(roi, img_t, kp_roi, kp_t, matches, topN=topN,
+                                        vis = draw_matches(roi, img_t, kp_roi, kp_t, matches, topN=topN,
                                                                  banner=("Homografia/Afin invalida", (0,165,255)))
                                 else:
-                                    vis = draw_matches_panel(roi, img_t, kp_roi, kp_t, matches, topN=topN,
+                                    vis = draw_matches(roi, img_t, kp_roi, kp_t, matches, topN=topN,
                                                              banner=("Homografia/Afin no estimable", (0,0,255)))
                             else:
-                                vis = draw_matches_panel(roi, img_t, kp_roi, kp_t, matches, topN=topN,
+                                vis = draw_matches(roi, img_t, kp_roi, kp_t, matches, topN=topN,
                                                          banner=(f"Pocas coincidencias ({good_n})", (0,0,255)))
                         else:
-                            vis = draw_matches_panel(roi, img_t, [], [], [], topN=0,
+                            vis = draw_matches(roi, img_t, [], [], [], topN=0,
                                                      banner=("Sin keypoints en imagen", (0,0,255)))
 
                         results.append(dict(nombre=name, status=status, good=good_n, inliers=inliers, modelo=kind or "-"))
@@ -454,7 +454,7 @@ with tab4:
                 name = st.text_input("Nombre", value=f"affine_{ang}deg")
 
             # --- Matriz A y centro actual ---
-            A, I = affine_matrix_RS(angle_deg=float(ang), sx=float(sx), sy=float(sy))
+            A, I = affine_matrix_RS(ang=float(ang), sx=float(sx), sy=float(sy))
             c_now = np.array([float(cx_ui), float(cy_ui)], np.float32)
 
             # --- Compensar cambio de pivote antes de crear sliders ---
