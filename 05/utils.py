@@ -73,7 +73,9 @@ def apply_affine(img, tx, ty, angle, cx, cy, sx, sy):
     tanto el lienzo completo como la vista recortada.
     """
     canvas, (ox, oy), (CW, CH) = make_canvas(img)
-    M = affine_matrix(angle, sx, sy, cx, cy, tx, ty)
+    cx_canvas = ox + cx
+    cy_canvas = oy + cy
+    M = affine_matrix(angle, sx, sy, cx_canvas, cy_canvas, tx, ty)
     out = cv.warpAffine(canvas, M, (CW, CH), borderValue=(255, 255, 255))
     view = out[oy:oy+img.shape[0], ox:ox+img.shape[1]].copy()
     return out, view
@@ -316,7 +318,7 @@ def is_valid_poly(poly, img_shape, min_area_ratio=1e-4, max_area_ratio=0.95):
     
     return True
 
-# MATCHES
+# Matches
 def draw_matches(img_left, img_right, kp_left, kp_right, matches, topN=100, poly=None, banner=None):
     """
     Dibuja los matches entre las dos imagenes, dibujando las líneas entre los puntos coincidentes.

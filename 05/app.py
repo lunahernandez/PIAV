@@ -10,19 +10,18 @@ import cv2 as cv
 from utils import (
     DEFAULT_SIFT,
     imagen_to_bgr, bgr_to_rgb, to_gray,
-    extract_sift, estimate_geom, transform_roi_box, is_valid_poly,
-    apply_transform, match_bf_crosscheck, match_knn_ratio,
-    draw_matches,
-    affine_matrix_RS, affine_update_t_for_pivot, affine_matrix_realtime, apply_affine_realtime,
-    apply_distortion
+    extract_sift, match_bf_crosscheck, match_knn_ratio,
+    estimate_geom, transform_roi_box, is_valid_poly,
+    apply_transform, apply_distortion,
+    affine_matrix_RS, affine_update_t_for_pivot,
+    affine_matrix_realtime, apply_affine_realtime,
+    draw_matches
 )
 
 
-
-# ----------------------------
-# Estado de sesión (solo UI)
-# ----------------------------
-def ensure_ss():
+# Estado de sesión de Streamlit
+def init_session_state():
+    "Inicializa variables necesarias en st.session_state."
     if "current_image" not in st.session_state:
         st.session_state.current_image = None
     if "sift" not in st.session_state:
@@ -31,19 +30,18 @@ def ensure_ss():
         st.session_state.roi_data = None
     if "roi_saved" not in st.session_state:
         st.session_state.roi_saved = False
-    if "transform_specs" not in st.session_state:
-        st.session_state.transform_specs = []  # lista de specs personalizados
+    if "custom_transforms" not in st.session_state:
+        st.session_state.custom_transforms = []
 
-ensure_ss()
+init_session_state()
 
-# ----------------------------
-# Sidebar: carga y SIFT
-# ----------------------------
+
+# Sidebar
 st.sidebar.title("Parámetros y datos")
 
-upl = st.sidebar.file_uploader("Sube una imagen", type=["png", "jpg", "jpeg", "bmp"])
-if upl is not None:
-    new_img = imagen_to_bgr(upl)
+uploaded_file = st.sidebar.file_uploader("Sube una imagen", type=["png", "jpg", "jpeg", "bmp"])
+if uploaded_file is not None:
+    new_img = imagen_to_bgr(uploaded_file)
     if st.session_state.current_image is None or not np.array_equal(new_img, st.session_state.current_image):
         st.session_state.current_image = new_img
         st.session_state.roi_data = None
@@ -72,9 +70,8 @@ with colB:
         st.session_state.sift = DEFAULT_SIFT.copy()
         st.rerun()
 
-# ----------------------------
+
 # Tabs
-# ----------------------------
 st.title("Detección de características SIFT")
 tab1, tab2, tab3, tab4 = st.tabs([
     "Características SIFT",
@@ -83,9 +80,8 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "Transformaciones personalizadas"
 ])
 
-# ----------------------------
-# Tab 1: Características
-# ----------------------------
+
+# Tab 1: Características SIFT
 with tab1:
     st.subheader("Vista de Puntos Clave Detectados con SIFT")
     img = st.session_state.current_image
@@ -94,12 +90,11 @@ with tab1:
     else:
         gray = to_gray(img)
         (kp, des), _ = extract_sift(gray, st.session_state.sift)
-        vis = cv.drawKeypoints(img, kp, None, flags=cv.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
-        st.image(bgr_to_rgb(vis), caption=f"Keypoints detectados: {len(kp)}", use_container_width=True)
+        view = cv.drawKeypoints(img, kp, None, flags=cv.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+        st.image(bgr_to_rgb(view), caption=f"Keypoints detectados: {len(kp)}", use_container_width=True)
 
-# ----------------------------
-# Tab 2: Selección de ROI (solo arrastrar, con botón de carga)
-# ----------------------------
+
+# Tab 2: Selección de ROI
 try:
     from streamlit_cropper import st_cropper
     HAS_CROPPER = True
@@ -135,26 +130,24 @@ with tab2:
             h, w = rgb.shape[:2]
             pil = Image.fromarray(rgb)
 
-            # Señal de imagen actual para reiniciar el flujo si cambia la imagen
+            # Reiniciar flujo porque hay nueva imagen
             img_sig = (h, w)
             if "roi_img_sig" not in st.session_state or st.session_state.roi_img_sig != img_sig:
                 st.session_state.roi_img_sig = img_sig
                 st.session_state.roi_ready = False
                 st.session_state.roi_last_crop = None
 
-            # Botón de control
+            # Botón de control para ROI
             if not st.session_state.get("roi_ready", False):
                 if st.button("Iniciar selección", type="primary", key="btn_start_crop"):
                     st.session_state.roi_ready = True
                     st.rerun()
 
-
-            # Mostrar imagen base siempre (da contexto y fuerza el primer render)
             st.image(rgb, caption="Imagen original", use_container_width=True)
 
+            # Recorte de ROI
             cropped = None
             if st.session_state.get("roi_ready", False):
-                # Montamos el cropper solo cuando el usuario lo pide
                 cropped = st_cropper(
                     pil,
                     realtime_update=True,
@@ -166,7 +159,7 @@ with tab2:
                 )
                 st.session_state.roi_last_crop = cropped
             else:
-                st.caption("Pulsa «Iniciar selección» para activar el recortador.")
+                st.caption("Pulsa 'Iniciar selección' para activar el recortador.")
 
             # Guardar ROI
             if st.button("Guardar ROI", key="save_roi_drag", type="primary"):
@@ -181,9 +174,8 @@ with tab2:
                     st.success(f"ROI guardada: {ww}x{hh} px")
                     st.rerun()
 
-# ----------------------------
-# Tab 3: Detección ROI (solo BFMatcher)
-# ----------------------------
+
+# Tab 3: Detección ROI
 with tab3:
     st.subheader("Detección de ROI en imágenes transformadas")
 
@@ -216,15 +208,15 @@ with tab3:
                 def_c = st.checkbox("Deformación cojín", value=True)
 
         else:
-            if len(st.session_state.transform_specs) == 0:
+            if len(st.session_state.custom_transforms) == 0:
                 st.warning("No hay transformaciones personalizadas definidas.")
             else:
-                st.success(f"Usando {len(st.session_state.transform_specs)} transformaciones personalizadas.")
+                st.success(f"Usando {len(st.session_state.custom_transforms)} transformaciones personalizadas.")
 
         st.markdown("---")
         st.markdown("Parámetros de detección")
 
-        # --- Emparejador ---
+        # Matcher
         matcher = st.selectbox("Emparejador", ["BF (crossCheck)", "KNN (ratio test)"], index=0)
         ratio = None
         if matcher == "KNN (ratio test)":
@@ -252,75 +244,75 @@ with tab3:
                     h, w = base.shape[:2]
                     cx, cy = w/2, h/2
 
-                    specs = []
+                    transforms = []
 
                     if rot30:
-                        specs.append({
+                        transforms.append({
                             "type":"affine", "name":"rotacion_30",
                             "tx":0, "ty":0, "angle":30, 
                             "cx":cx, "cy":cy, "sx":1, "sy":1
                         })
 
                     if rotm45:
-                        specs.append({
+                        transforms.append({
                             "type":"affine", "name":"rotacion_-45",
                             "tx":0, "ty":0, "angle":-45,
                             "cx":cx, "cy":cy, "sx":1, "sy":1
                         })
 
                     if esc15:
-                        specs.append({
+                        transforms.append({
                             "type":"affine", "name":"escala_1.5",
                             "tx":0, "ty":0, "angle":0,
                             "cx":cx, "cy":cy, "sx":1.5, "sy":1.5
                         })
 
                     if esc07:
-                        specs.append({
+                        transforms.append({
                             "type":"affine", "name":"escala_0.7",
                             "tx":0, "ty":0, "angle":0,
                             "cx":cx, "cy":cy, "sx":0.7, "sy":0.7
                         })
 
                     if tr1:
-                        specs.append({
+                        transforms.append({
                             "type":"affine", "name":"traslacion_50_100",
                             "tx":50, "ty":100, "angle":0,
                             "cx":cx, "cy":cy, "sx":1, "sy":1
                         })
 
                     if tr2:
-                        specs.append({
+                        transforms.append({
                             "type":"affine", "name":"traslacion_-30_80",
                             "tx":-30, "ty":80, "angle":0,
                             "cx":cx, "cy":cy, "sx":1, "sy":1
                         })
 
                     if def_b:
-                        specs.append({
+                        transforms.append({
                             "type":"distortion", "name":"deformacion_barril",
-                            "k1":0.00001, "k2":0, "p1":0, "p2":0, "k3":0,
+                            "k1":0.0001, "k2":0, "p1":0, "p2":0, "k3":0,
                             "cx":None, "cy":None, "focal":10
                         })
 
                     if def_c:
-                        specs.append({
+                        transforms.append({
                             "type":"distortion", "name":"deformacion_cojin",
-                            "k1":-0.00001, "k2":0, "p1":0, "p2":0, "k3":0,
+                            "k1":-0.0001, "k2":0, "p1":0, "p2":0, "k3":0,
                             "cx":None, "cy":None, "focal":10
                         })
 
-                    for spec in specs:
-                        nombre, img_out = apply_transform(base, spec)
+                    for transform in transforms:
+                        nombre, img_out = apply_transform(base, transform)
                         todo.append((nombre, img_out))
 
                 else:
-                    for i, spec in enumerate(st.session_state.transform_specs):
+                    for i, transform in enumerate(st.session_state.custom_transforms):
                         try:
-                            name, img_t = apply_transform(base, spec)
+                            name, img_t = apply_transform(base, transform)
                             todo.append((f"{i:02d}_{name}", img_t))
                         except Exception as e:
-                            st.warning(f"Error en spec {i}: {e}")
+                            st.warning(f"Error en transformación {i}: {e}")
 
                 if not todo:
                     st.warning("Selecciona al menos una transformación.")
@@ -339,7 +331,7 @@ with tab3:
                         status = "NO DETECTADA"
                         good_n = 0
                         inliers = 0
-                        kind = None
+                        model_type = None
 
                         if des_t is not None and len(kp_t) > 1:
                             if matcher == "BF (crossCheck)":
@@ -350,37 +342,35 @@ with tab3:
                             good_n = len(matches)
 
                             if good_n >= min_matches:
-                                M, mask, inl, kind = estimate_geom(kp_roi, kp_t, matches, ransac_thresh=ransac, prefer_affine=True)
-                                inliers = inl
+                                M, mask, inliers, model_type = estimate_geom(kp_roi, kp_t, matches, ransac_thresh=ransac, prefer_affine=True)
                                 if M is not None and inliers >= 4:
-                                    poly = transform_roi_box(M, kind, roi_gray.shape[:2])
+                                    poly = transform_roi_box(M, model_type, roi_gray.shape[:2])
                                     if is_valid_poly(poly, img_t.shape):
                                         status = "DETECTADA"
-                                        vis = draw_matches(roi, img_t, kp_roi, kp_t, matches, topN=topN, poly=poly)
+                                        view = draw_matches(roi, img_t, kp_roi, kp_t, matches, topN=topN, poly=poly)
                                     else:
-                                        vis = draw_matches(roi, img_t, kp_roi, kp_t, matches, topN=topN,
+                                        view = draw_matches(roi, img_t, kp_roi, kp_t, matches, topN=topN,
                                                                  banner=("Homografia/Afin invalida", (0,165,255)))
                                 else:
-                                    vis = draw_matches(roi, img_t, kp_roi, kp_t, matches, topN=topN,
+                                    view = draw_matches(roi, img_t, kp_roi, kp_t, matches, topN=topN,
                                                              banner=("Homografia/Afin no estimable", (0,0,255)))
                             else:
-                                vis = draw_matches(roi, img_t, kp_roi, kp_t, matches, topN=topN,
+                                view = draw_matches(roi, img_t, kp_roi, kp_t, matches, topN=topN,
                                                          banner=(f"Pocas coincidencias ({good_n})", (0,0,255)))
                         else:
-                            vis = draw_matches(roi, img_t, [], [], [], topN=0,
+                            view = draw_matches(roi, img_t, [], [], [], topN=0,
                                                      banner=("Sin keypoints en imagen", (0,0,255)))
 
-                        results.append(dict(nombre=name, status=status, good=good_n, inliers=inliers, modelo=kind or "-"))
-                        imgs_out.append((name, vis))
+                        results.append(dict(nombre=name, status=status, good=good_n, inliers=inliers, modelo=model_type or "-"))
+                        imgs_out.append((name, view))
                         progress_bar.progress((idx + 1) / len(todo))
 
                     status_text.text("Procesamiento completado")
                     progress_bar.empty()
 
                     st.markdown("---")
-                    st.markdown("Resultados visuales (ROI a la izquierda, imagen transformada a la derecha)")
-                    for name, vis in imgs_out:
-                        st.image(bgr_to_rgb(vis), caption=name, use_container_width=True)
+                    for name, view in imgs_out:
+                        st.image(bgr_to_rgb(view), caption=name, use_container_width=True)
 
                     df = pd.DataFrame(results)
                     st.dataframe(df, use_container_width=True)
@@ -391,8 +381,8 @@ with tab3:
 
                     buf = io.BytesIO()
                     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                        for name, vis in imgs_out:
-                            _, png = cv.imencode(".png", vis[:, :, ::-1])
+                        for name, view in imgs_out:
+                            _, png = cv.imencode(".png", view)
                             zf.writestr(f"{name}.png", png.tobytes())
                         zf.writestr("resumen.csv", df.to_csv(index=False).encode("utf-8"))
 
@@ -403,9 +393,8 @@ with tab3:
                         mime="application/zip"
                     )
 
-# ----------------------------
+
 # Tab 4: Transformaciones personalizadas
-# ----------------------------
 with tab4:
     st.subheader("Diseñador de transformaciones")
     if st.session_state.current_image is None:
@@ -420,11 +409,8 @@ with tab4:
             horizontal=True
         )
 
-        # =====================================================================
-        # --------------------------- AFIN -----------------------------------
-        # =====================================================================
+        # Afín
         if "Afín" in mode:
-
             col = st.columns(3)
             with col[0]:
                 sf = st.slider("Factor lienzo", 1.2, 4.0, 2.0, 0.1)
@@ -440,7 +426,7 @@ with tab4:
 
                 CW, CH = int(w * sf), int(h * sf)
 
-                # --- Estado inicial si no existe ---
+                # Inicializar t y c
                 if "tab4_t" not in st.session_state:
                     st.session_state.tab4_t = np.array([0.0, 0.0], np.float32)
                 if "tab4_prev_c" not in st.session_state:
@@ -453,17 +439,16 @@ with tab4:
                 cy_ui = st.slider("Centro Cy (px lienzo)", 0, CH, CH // 2, 1)
                 name = st.text_input("Nombre", value=f"affine_{ang}deg")
 
-            # --- Matriz A y centro actual ---
+            # Matriz A y centro actual
             A, I = affine_matrix_RS(ang=float(ang), sx=float(sx), sy=float(sy))
             c_now = np.array([float(cx_ui), float(cy_ui)], np.float32)
 
-            # --- Compensar cambio de pivote antes de crear sliders ---
+            # Compensar cambio de pivote
             if not np.allclose(c_now, prev_c):
                 t_state = affine_update_t_for_pivot(t_state, prev_c, c_now, A, I)
                 st.session_state.tab4_t = t_state.copy()
                 st.session_state.tab4_prev_c = c_now.copy()
 
-            # --- Sliders de traslación (sin key para evitar conflictos) ---
             tx_ui = st.slider(
                 "Tx (px lienzo)",
                 -CW // 2, CW // 2,
@@ -477,20 +462,18 @@ with tab4:
                 step=1
             )
 
-            # --- Si el usuario mueve los sliders, actualizar t_state ---
+            # actualizar t_state
             if (tx_ui != int(round(t_state[0]))) or (ty_ui != int(round(t_state[1]))):
                 t_state = np.array([float(tx_ui), float(ty_ui)], np.float32)
                 st.session_state.tab4_t = t_state.copy()
 
-            # --- Construcción de la matriz completa ---
+            # Crear y aplicar transformación
             M, b = affine_matrix_realtime(A=A, t=t_state, c=c_now, I=I)
-
-            # --- Vista previa ---
             view, pc, CW, CH, ox, oy = apply_affine_realtime(
                 img=img, M=M, A=A, b=b, c_now=c_now
             )
 
-            # Dibujar pivote en la vista
+            # Dibujar pivote
             disp = view.copy()
             cv.circle(disp, (int(pc[0]-ox), int(pc[1]-oy)), 6, (0,0,255), -1)
             cv.putText(disp, f"C=({int(cx_ui)},{int(cy_ui)})",
@@ -499,11 +482,11 @@ with tab4:
 
             st.image(bgr_to_rgb(disp), caption="Vista previa", use_container_width=True)
 
-            # --- Botones ---
+            # Botones Lista
             c1, c2 = st.columns(2)
             with c1:
                 if st.button("Añadir a lista"):
-                    st.session_state.transform_specs.append(dict(
+                    st.session_state.custom_transforms.append(dict(
                         type="affine", name=name,
                         tx=float(t_state[0]), ty=float(t_state[1]),
                         angle=float(ang), cx=float(c_now[0]), cy=float(c_now[1]),
@@ -512,12 +495,10 @@ with tab4:
                     st.success("Transformación añadida")
             with c2:
                 if st.button("Vaciar lista"):
-                    st.session_state.transform_specs = []
+                    st.session_state.custom_transforms = []
                     st.info("Lista vaciada")
 
-        # =====================================================================
-        # ------------------------- DISTORSIÓN -------------------------------
-        # =====================================================================
+        # Distorsión
         else:
             st.markdown("Parámetros de distorsión radial/tangencial")
             col = st.columns(2)
@@ -544,39 +525,37 @@ with tab4:
             with c1:
                 name = st.text_input("Nombre", value="distortion_custom")
                 if st.button("Añadir a lista"):
-                    spec = dict(type="distortion", name=name, k1=k1, k2=k2, p1=p1, p2=p2, k3=k3, focal=50.0)
+                    transform = dict(type="distortion", name=name, k1=k1, k2=k2, p1=p1, p2=p2, k3=k3, focal=50.0)
                     if center is not None:
-                        spec["cx"], spec["cy"] = center[0], center[1]
-                    st.session_state.transform_specs.append(spec)
+                        transform["cx"], transform["cy"] = center[0], center[1]
+                    st.session_state.custom_transforms.append(transform)
                     st.success("Transformación añadida")
             with c2:
                 if st.button("Vaciar lista"):
-                    st.session_state.transform_specs = []
+                    st.session_state.custom_transforms = []
                     st.info("Lista vaciada")
 
-        # =====================================================================
-        # --------------------------- LISTA ----------------------------------
-        # =====================================================================
+        # Lista de transformaciones personalizadas
         st.markdown("---")
         st.markdown("Transformaciones en la lista")
 
-        specs = st.session_state.transform_specs
-        if len(specs) == 0:
+        transforms = st.session_state.custom_transforms
+        if len(transforms) == 0:
             st.info("No hay transformaciones añadidas.")
         else:
-            df = pd.DataFrame(specs)
+            df = pd.DataFrame(transforms)
             st.dataframe(df, use_container_width=True)
 
-            # Botones de borrado robustos
+            # Botones para borrar transformaciones personalizadas
             to_delete = None
-            for i, spec in enumerate(specs):
+            for i, transform in enumerate(transforms):
                 c1, c2 = st.columns([8, 1])
                 with c1:
-                    st.code(str(spec))
+                    st.code(str(transform))
                 with c2:
                     if st.button("Eliminar", key=f"del_{i}"):
                         to_delete = i
 
             if to_delete is not None:
-                st.session_state.transform_specs.pop(to_delete)
-                st.rerun()  # <-- reemplaza experimental_rerun por rerun
+                st.session_state.custom_transforms.pop(to_delete)
+                st.rerun()
