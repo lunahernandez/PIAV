@@ -317,7 +317,7 @@ def is_valid_poly(poly, img_shape, min_area_ratio=1e-4, max_area_ratio=0.95):
     return True
 
 # MATCHES
-def draw_matches(img_left, img_right, kp_left, kp_right, matches, topN=100, poly_right=None, banner=None):
+def draw_matches(img_left, img_right, kp_left, kp_right, matches, topN=100, poly=None, banner=None):
     """
     Dibuja los matches entre las dos imagenes, dibujando las líneas entre los puntos coincidentes.
     """
@@ -340,8 +340,8 @@ def draw_matches(img_left, img_right, kp_left, kp_right, matches, topN=100, poly
         cv.circle(view, pt2_shift, 3, color, -1, cv.LINE_AA)
         cv.line(view, pt1, pt2_shift, color, 1, cv.LINE_AA)
 
-    if poly_right is not None and poly_right.size == 8:
-        poly = poly_right.reshape(-1, 2).astype(int)
+    if poly is not None and poly.size == 8:
+        poly = poly.reshape(-1, 2).astype(int)
         poly[:, 0] += offset
         cv.polylines(view, [poly.reshape(-1,1,2)], True, (0,0,255), 3, cv.LINE_AA)
 

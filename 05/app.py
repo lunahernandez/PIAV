@@ -356,7 +356,7 @@ with tab3:
                                     poly = transform_roi_box(M, kind, roi_gray.shape[:2])
                                     if is_valid_poly(poly, img_t.shape):
                                         status = "DETECTADA"
-                                        vis = draw_matches(roi, img_t, kp_roi, kp_t, matches, topN=topN, poly_right=poly)
+                                        vis = draw_matches(roi, img_t, kp_roi, kp_t, matches, topN=topN, poly=poly)
                                     else:
                                         vis = draw_matches(roi, img_t, kp_roi, kp_t, matches, topN=topN,
                                                                  banner=("Homografia/Afin invalida", (0,165,255)))
