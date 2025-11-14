@@ -3,9 +3,8 @@ import cv2 as cv
 import numpy as np
 from PIL import Image
 
-# ----------------------------
-# Parámetros por defecto SIFT
-# ----------------------------
+
+# Parámetros por defecto de SIFT
 DEFAULT_SIFT = dict(
     nfeatures=1000,
     nOctaveLayers=3,
@@ -14,73 +13,190 @@ DEFAULT_SIFT = dict(
     sigma=1.6,
 )
 
-# ----------------------------
-# Utilidades de imagen
-# ----------------------------
-def file_to_bgr(uploaded_file):
-    image = Image.open(uploaded_file).convert("RGB")
-    arr = np.array(image)[:, :, ::-1]  # RGB->BGR
-    return arr
+
+# Utilidades
+def imagen_to_bgr(file):
+    """Convierte un archivo de imagen a formato BGR."""
+    image = Image.open(file).convert("RGB")
+    array = np.array(image)
+    bgr = cv.cvtColor(array, cv.COLOR_RGB2BGR)
+    return bgr
+
 
 def bgr_to_rgb(img):
-    # Versión simple y rápida (coherente con tu app)
-    return img[:, :, ::-1] if img.ndim == 3 else img
+    """Convierte una imagen BGR en RGB."""
+    return cv.cvtColor(img, cv.COLOR_BGR2RGB)
 
-def to_gray(img_bgr):
-    return cv.cvtColor(img_bgr, cv.COLOR_BGR2GRAY) if img_bgr.ndim == 3 else img_bgr
 
-# ----------------------------
-# Transformaciones “por defecto”
-# ----------------------------
-def rotate_image(img, angle):
+def to_gray(img):
+    """Convierte una imagen BGR en RGB."""
+    return cv.cvtColor(img, cv.COLOR_BGR2GRAY) if img.ndim == 3 else img
+
+
+# Transformaciones predefinidas
+def make_canvas(img):
+    """
+    Devuelve un lienzo 2x blanco, el desplazamiento para centrar
+    la imagen y las dimensiones del lienzo.
+    """
     h, w = img.shape[:2]
-    center = (w // 2, h // 2)
-    M = cv.getRotationMatrix2D(center, angle, 1.0)
-    cos, sin = abs(M[0, 0]), abs(M[0, 1])
-    new_w, new_h = int((h * sin) + (w * cos)), int((h * cos) + (w * sin))
-    M[0, 2] += (new_w / 2) - center[0]
-    M[1, 2] += (new_h / 2) - center[1]
-    return cv.warpAffine(img, M, (new_w, new_h), borderValue=(255, 255, 255))
+    CW, CH = int(w * 2), int(h * 2)
+    canvas = np.full((CH, CW, 3), 255, dtype=np.uint8)
+    ox, oy = (CW - w) // 2, (CH - h) // 2
+    canvas[oy:oy+h, ox:ox+w] = img
+    return canvas, (ox, oy), (CW, CH)
 
-def scale_image(img, scale):
-    h, w = img.shape[:2]
-    scaled = cv.resize(img, None, fx=scale, fy=scale, interpolation=cv.INTER_LINEAR)
-    if scale > 1.0:
-        new_h, new_w = scaled.shape[:2]
-        y0, x0 = (new_h - h) // 2, (new_w - w) // 2
-        return scaled[y0:y0+h, x0:x0+w]
+
+def affine_matrix(ang, sx, sy, cx, cy, tx, ty):
+    """
+    Construye una matriz 2x3 tal que x' = A x + b, 
+    con pivote (cx,cy) y traslación (tx,ty).
+    """
+    rad = np.deg2rad(ang)
+    c, s = np.cos(rad), np.sin(rad)
+    R = np.array([[ c, -s],
+                  [ s,  c]], dtype=np.float32)
+    S = np.array([[sx, 0.0],
+                  [0.0, sy]], dtype=np.float32)
+    A = (R @ S).astype(np.float32)
+    I = np.eye(2, dtype=np.float32)
+    pivot = np.array([cx, cy], dtype=np.float32)
+    t = np.array([tx, ty], dtype=np.float32)
+    b = (t + (I - A) @ pivot).astype(np.float32)  # b = t + (I - A) pivot
+    M = np.hstack([A, b.reshape(2, 1)]) # 2x3
+    return M
+
+
+def apply_affine(img, tx, ty, angle, cx, cy, sx, sy):
+    """
+    Aplica la transformación afín a la imagen y devuelve 
+    tanto el lienzo completo como la vista recortada.
+    """
+    canvas, (ox, oy), (CW, CH) = make_canvas(img)
+    M = affine_matrix(angle, sx, sy, cx, cy, tx, ty)
+    out = cv.warpAffine(canvas, M, (CW, CH), borderValue=(255, 255, 255))
+    view = out[oy:oy+img.shape[0], ox:ox+img.shape[1]].copy()
+    return out, view
+
+
+def apply_distortion(image, k1, k2, p1, p2, k3, center=None, focal=10.0):
+    """Aplica distorsión radial/tangencial y devuelve la imagen distorsionada."""
+    h, w = image.shape[:2]
+    cam = np.eye(3, dtype=np.float32)
+
+    cam[0, 0] = focal
+    cam[1, 1] = focal
+
+    if center is None:
+        cam[0, 2] = w / 2.0
+        cam[1, 2] = h / 2.0
     else:
-        new_h, new_w = scaled.shape[:2]
-        result = np.full((h, w, 3), 255, dtype=np.uint8)
-        y0, x0 = (h - new_h) // 2, (w - new_w) // 2
-        result[y0:y0+new_h, x0:x0+new_w] = scaled
-        return result
+        cam[0, 2] = float(center[0])
+        cam[1, 2] = float(center[1])
 
-def translate_image(img, tx, ty):
+    dist = np.zeros((5, 1), np.float64)
+    dist[0, 0] = float(k1)
+    dist[1, 0] = float(k2)
+    dist[2, 0] = float(p1)
+    dist[3, 0] = float(p2)
+    dist[4, 0] = float(k3)
+
+    out = cv.undistort(image, cam, dist)
+    return out
+
+
+def apply_transform(base_img, params):
+    """
+    Aplica una transformación según unos parámetros del tipo:
+      - {'type':'affine', 'tx':.., 'ty':.., 'angle':.., 'cx':.., 'cy':.., 'sx':..,'sy':..}
+      - {'type':'distortion','k1':..,'k2':..,'p1':..,'p2':..,'k3':..,'cx':.. or None,'cy':.. or None,'focal':..}
+    Devuelve el nombre de la transformación y la imagen transformada.
+    """
+    type = params.get("type")
+    name = params.get("name", type)
+    if type == "affine":
+        tx = float(params.get("tx", 0.0))
+        ty = float(params.get("ty", 0.0))
+        ang = float(params.get("angle", 0.0))
+        cx  = float(params.get("cx", 0.0))
+        cy  = float(params.get("cy", 0.0))
+        sx  = float(params.get("sx", 1.0))
+        sy  = float(params.get("sy", 1.0))
+        out, view = apply_affine(base_img, tx, ty, ang, cx, cy, sx, sy)
+        return name, view
+    elif type == "distortion":
+        k1 = float(params.get("k1", 0.0))
+        k2 = float(params.get("k2", 0.0))
+        p1 = float(params.get("p1", 0.0))
+        p2 = float(params.get("p2", 0.0))
+        k3 = float(params.get("k3", 0.0))
+        focal = float(params.get("focal", 10.0))
+        if params.get("cx") is None or params.get("cy") is None:
+            center = None
+        else:
+            center = (float(params["cx"]), float(params["cy"]))
+        out = apply_distortion(base_img, k1, k2, p1, p2, k3, center=center, focal=focal)
+        return name, out
+    else:
+        raise ValueError(f"Tipo de transformación no soportado: {type}")
+
+
+# Transformaciones personalizadas 
+def affine_matrix_RS(ang, sx, sy):
+    """Devuelve las matrices A (escalado y rotación) y la matriz identidad I."""
+    rad = np.deg2rad(ang)
+    c, s = np.cos(rad), np.sin(rad)
+    R = np.array([[ c, -s],
+                  [ s,  c]], dtype=np.float32)
+    S = np.array([[sx, 0.0],
+                  [0.0, sy]], dtype=np.float32)
+    A = (R @ S).astype(np.float32)
+    I = np.eye(2, dtype=np.float32)
+    return A, I
+
+
+def affine_update_t_for_pivot(t_state, prev_c, c_now, A, I):
+    """
+    Devuelve el vector de traslación t. 
+    Mantiene b = t + (I - A)·c constante al cambiar c.
+    """
+    b_keep = t_state + (I - A) @ prev_c
+    t_new  = b_keep - (I - A) @ c_now
+    return t_new.astype(np.float32)
+
+
+def affine_matrix_realtime(A, t, c, I):
+    """
+    Devuelve una matriz M 2x3 tal que x' = A x + b,
+    y el vector de traslación b, con compensación.
+    """
+    b = (t + (I - A) @ c).astype(np.float32)
+    M = np.hstack([A, b.reshape(2,1)])
+    return M, b
+
+
+def apply_affine_realtime(img, M, A, b, c_now):
+    """
+    Aplica la transformación afín a la imagen y devuelve 
+    la vista recortada, el pivote, las dimensiones del
+    lienzo y los desplazamientos para centrar la imagen.
+    """
     h, w = img.shape[:2]
-    M = np.float32([[1, 0, tx], [0, 1, ty]])
-    return cv.warpAffine(img, M, (w, h), borderValue=(255, 255, 255))
+    CW, CH = int(w*2), int(h*2)
+    canvas = np.full((CH, CW, 3), 255, dtype=np.uint8)
+    ox, oy = (CW - w)//2, (CH - h)//2
+    canvas[oy:oy+h, ox:ox+w] = img
+
+    out = cv.warpAffine(canvas, M, (CW, CH), borderValue=(255,255,255))
+    pivot  = (A @ c_now + b).astype(int)
+
+    view = out[oy:oy+h, ox:ox+w].copy()
+    return view, pivot, CW, CH, ox, oy
 
 
-def deform_radial(img, k=0.00001):
-    h, w = img.shape[:2]
-    fx = fy = 1.0
-    cx, cy = w / 2, h / 2
-    K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
-    D = np.array([k, 0, 0, 0], dtype=np.float32)
-    map1, map2 = cv.initUndistortRectifyMap(K, D, None, K, (w, h), cv.CV_32FC1)
-    return cv.remap(img, map1, map2, interpolation=cv.INTER_LINEAR, borderValue=(255, 255, 255))
-
-def deform_barrel(img, k=0.00001):
-    return deform_radial(img, k=k)
-
-def deform_pincushion(img, k=-0.00001):
-    return deform_radial(img, k=k)
-
-# ----------------------------
-# SIFT y matching
-# ----------------------------
+# SIFT
 def create_sift(params):
+    """Crea un detector SIFT con los parámetros especificados."""
     return cv.SIFT_create(
         nfeatures=int(params["nfeatures"]),
         nOctaveLayers=int(params["nOctaveLayers"]),
@@ -89,9 +205,12 @@ def create_sift(params):
         sigma=float(params["sigma"]),
     )
 
+
 def extract_sift(gray, params):
+    """Extrae los puntos claves y los descriptores SIFT de una imagen en escala de grises."""
     sift = create_sift(params)
     return sift.detectAndCompute(gray, None), sift
+
 
 def match_bf_crosscheck(des1, des2):
     bf = cv.BFMatcher(cv.NORM_L2, crossCheck=True)
@@ -115,6 +234,10 @@ def match_knn_ratio(des1, des2, ratio=0.75, k=2):
     return sorted(good, key=lambda x: x.distance)
 
 def estimate_geom(kp_q, kp_t, good, ransac_thresh=5.0, prefer_affine=False):
+    """
+    Busca la transformación afín o homografía entre dos conjuntos de puntos claves
+    donde con RANSAC se han identificado los matches buenos(inliners) y descaran los incorrectos.
+    """
     if len(good) < 4:
         return None, None, 0, None
     src = np.float32([kp_q[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
@@ -138,16 +261,24 @@ def estimate_geom(kp_q, kp_t, good, ransac_thresh=5.0, prefer_affine=False):
     return None, None, 0, None
 
 def project_box(M, model_kind, roi_shape):
+    """
+    Dibuja el cuadrado de la ROI usando la transformación necesaria que se calcula anteriormente
+    para poder saber donde se mapeará la ROI en la imagen destino.
+    """
     h, w = roi_shape
     box = np.float32([[0, 0], [w, 0], [w, h], [0, h]]).reshape(-1, 1, 2)
     if model_kind == "homography":
-        proj = cv.perspectiveTransform(box, M).reshape(-1, 2)
+        proj = cv.pertransformtiveTransform(box, M).reshape(-1, 2)
     else:
         pts = box.reshape(-1, 2)
         proj = cv.transform(pts[None, :, :], M)[0]
     return proj.astype(np.int32)
 
 def is_valid_quad(poly, img_shape, min_area_ratio=1e-4, max_area_ratio=0.95):
+    """
+    Comprueba si el cuadrado dibujado es válido según si esta dentro de la imagen,
+    si es convexo, si su área es adecuada y si sus lados no son demasiado pequeños
+    """
     if poly is None or len(poly) != 4:
         return False
     h, w = img_shape[:2]
@@ -166,106 +297,14 @@ def is_valid_quad(poly, img_shape, min_area_ratio=1e-4, max_area_ratio=0.95):
         return False
     return True
 
-# ----------------------------
-# Motor de transformaciones personalizadas
-# ----------------------------
-def make_canvas_centered(img, scale_factor=2):
-    """Devuelve canvas blanco y offset para centrar imagen."""
-    h, w = img.shape[:2]
-    CW, CH = int(w * scale_factor), int(h * scale_factor)
-    canvas = np.full((CH, CW, 3), 255, dtype=np.uint8)
-    ox, oy = (CW - w) // 2, (CH - h) // 2
-    canvas[oy:oy+h, ox:ox+w] = img
-    return canvas, (ox, oy), (CW, CH)
-
-def affine_matrix_with_pivot(angle_deg, sx, sy, cx, cy, tx, ty):
-    """Construye M 2x3 tal que x' = A x + b, con pivote (cx,cy) y traslación (tx,ty)."""
-    rad = np.deg2rad(angle_deg)
-    c, s = np.cos(rad), np.sin(rad)
-    R = np.array([[ c, -s],
-                  [ s,  c]], dtype=np.float32)
-    S = np.array([[sx, 0.0],
-                  [0.0, sy]], dtype=np.float32)
-    A = (R @ S).astype(np.float32)
-    I = np.eye(2, dtype=np.float32)
-    c_vec = np.array([cx, cy], dtype=np.float32)
-    t_vec = np.array([tx, ty], dtype=np.float32)
-    b = (t_vec + (I - A) @ c_vec).astype(np.float32)  # b = t + (I - A) c
-    M = np.hstack([A, b.reshape(2, 1)])
-    return M
-
-def warp_affine_on_canvas(img, scale_factor, tx, ty, angle, cx, cy, sx, sy):
-    """Aplica afin con pivote a la imagen centrada en un canvas ampliado."""
-    canvas, (ox, oy), (CW, CH) = make_canvas_centered(img, scale_factor)
-    M = affine_matrix_with_pivot(angle, sx, sy, cx, cy, tx, ty)
-    out = cv.warpAffine(canvas, M, (CW, CH), borderValue=(255, 255, 255))
-    view = out[oy:oy+img.shape[0], ox:ox+img.shape[1]].copy()
-    return out, view, (CW, CH)
-
-def apply_distortion_full(image, k1, k2, p1, p2, k3, center=None, focal=10.0):
-    """Aplica distorsión radial/tangencial, devolviendo imagen del mismo tamaño."""
-    h, w = image.shape[:2]
-    cam = np.eye(3, dtype=np.float32)
-    cam[0, 0] = focal
-    cam[1, 1] = focal
-    if center is None:
-        cam[0, 2] = w / 2.0
-        cam[1, 2] = h / 2.0
-    else:
-        cam[0, 2] = float(center[0])
-        cam[1, 2] = float(center[1])
-
-    dist = np.zeros((5, 1), np.float64)
-    dist[0, 0] = float(k1)
-    dist[1, 0] = float(k2)
-    dist[2, 0] = float(p1)
-    dist[3, 0] = float(p2)
-    dist[4, 0] = float(k3)
-
-    out = cv.undistort(image, cam, dist)
-    return out
-
-
-def apply_transform_spec(base_img, spec):
-    """
-    Aplica una transformación según un spec:
-      - {'type':'affine', 'scale_factor':2.0, 'tx':.., 'ty':.., 'angle':.., 'cx':.., 'cy':.., 'sx':..,'sy':..}
-      - {'type':'distortion','k1':..,'k2':..,'p1':..,'p2':..,'k3':..,'cx':.. or None,'cy':.. or None,'focal':..}
-    Devuelve (nombre, imagen_transformada).
-    """
-    t = spec.get("type")
-    name = spec.get("name", t)
-    if t == "affine":
-        sf = float(spec.get("scale_factor", 2.0))
-        tx = float(spec.get("tx", 0.0))
-        ty = float(spec.get("ty", 0.0))
-        ang = float(spec.get("angle", 0.0))
-        cx  = float(spec.get("cx", 0.0))
-        cy  = float(spec.get("cy", 0.0))
-        sx  = float(spec.get("sx", 1.0))
-        sy  = float(spec.get("sy", 1.0))
-        out, view, _ = warp_affine_on_canvas(base_img, sf, tx, ty, ang, cx, cy, sx, sy)
-        return name, view
-    elif t == "distortion":
-        k1 = float(spec.get("k1", 0.0))
-        k2 = float(spec.get("k2", 0.0))
-        p1 = float(spec.get("p1", 0.0))
-        p2 = float(spec.get("p2", 0.0))
-        k3 = float(spec.get("k3", 0.0))
-        focal = float(spec.get("focal", 10.0))
-        if spec.get("cx") is None or spec.get("cy") is None:
-            center = None
-        else:
-            center = (float(spec["cx"]), float(spec["cy"]))
-        out = apply_distortion_full(base_img, k1, k2, p1, p2, k3, center=center, focal=focal)
-        return name, out
-    else:
-        raise ValueError(f"Tipo de transformación no soportado: {t}")
 
 # ----------------------------
 # Visualización de matches
 # ----------------------------
 def draw_matches_panel(img_left, img_right, kp_left, kp_right, matches, topN=100, poly_right=None, banner=None):
+    """
+    Dibuja los matches entre las dos imagenes, dibujando las líneas entre los puntos coincidentes.
+    """
     left = cv.cvtColor(img_left, cv.COLOR_GRAY2BGR) if img_left.ndim == 2 else img_left.copy()
     right = cv.cvtColor(img_right, cv.COLOR_GRAY2BGR) if img_right.ndim == 2 else img_right.copy()
 
@@ -295,49 +334,3 @@ def draw_matches_panel(img_left, img_right, kp_left, kp_right, matches, topN=100
         cv.putText(vis, txt, (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.9, col, 2, cv.LINE_AA)
 
     return vis
-
-# ----------------------------
-# Afin avanzado (RS, compensación y preview)
-# ----------------------------
-def affine_matrix_RS(angle_deg: float, sx: float, sy: float):
-    """Devuelve (A, I) con A = R(ang) @ S(sx,sy)."""
-    rad = np.deg2rad(angle_deg)
-    c, s = np.cos(rad), np.sin(rad)
-    R = np.array([[ c, -s],
-                  [ s,  c]], dtype=np.float32)
-    S = np.array([[sx, 0.0],
-                  [0.0, sy]], dtype=np.float32)
-    A = (R @ S).astype(np.float32)
-    I = np.eye(2, dtype=np.float32)
-    return A, I
-
-def affine_update_t_for_pivot(t_state: np.ndarray, prev_c: np.ndarray, c_now: np.ndarray, A: np.ndarray, I: np.ndarray):
-    """Mantiene b = t + (I - A)·c constante al cambiar c."""
-    b_keep = t_state + (I - A) @ prev_c
-    t_new  = b_keep - (I - A) @ c_now
-    return t_new.astype(np.float32)
-
-def affine_build_2x3(A: np.ndarray, t: np.ndarray, c: np.ndarray, I: np.ndarray):
-    """Devuelve (M 2x3, b) con x' = A x + b,  b = t + (I - A)·c."""
-    b = (t + (I - A) @ c).astype(np.float32)
-    M = np.hstack([A, b.reshape(2,1)])
-    return M, b
-
-def affine_preview_on_canvas(img: np.ndarray, scale_factor: float, M: np.ndarray, A: np.ndarray, b: np.ndarray, c_now: np.ndarray):
-    """
-    Aplica warp sobre un lienzo centrado y devuelve:
-      - view: recorte central del tamaño original
-      - pc: pivote transformado (A·c + b)
-      - CW, CH, ox, oy
-    """
-    h, w = img.shape[:2]
-    CW, CH = int(w*scale_factor), int(h*scale_factor)
-    canvas = np.full((CH, CW, 3), 255, dtype=np.uint8)
-    ox, oy = (CW - w)//2, (CH - h)//2
-    canvas[oy:oy+h, ox:ox+w] = img
-
-    out = cv.warpAffine(canvas, M, (CW, CH), borderValue=(255,255,255))
-    pc  = (A @ c_now + b).astype(int)
-
-    view = out[oy:oy+h, ox:ox+w].copy()
-    return view, pc, CW, CH, ox, oy

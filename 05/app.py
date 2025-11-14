@@ -9,14 +9,12 @@ import cv2 as cv
 
 from utils import (
     DEFAULT_SIFT,
-    file_to_bgr, bgr_to_rgb, to_gray,
-    rotate_image, scale_image, translate_image,
-    deform_barrel, deform_pincushion,
+    imagen_to_bgr, bgr_to_rgb, to_gray,
     extract_sift, estimate_geom, project_box, is_valid_quad,
-    apply_transform_spec, match_bf_crosscheck, match_knn_ratio,
+    apply_transform, match_bf_crosscheck, match_knn_ratio,
     draw_matches_panel,
-    affine_matrix_RS, affine_update_t_for_pivot, affine_build_2x3, affine_preview_on_canvas,
-    apply_distortion_full
+    affine_matrix_RS, affine_update_t_for_pivot, affine_matrix_realtime, apply_affine_realtime,
+    apply_distortion
 )
 
 
@@ -45,7 +43,7 @@ st.sidebar.title("Parámetros y datos")
 
 upl = st.sidebar.file_uploader("Sube una imagen", type=["png", "jpg", "jpeg", "bmp"])
 if upl is not None:
-    new_img = file_to_bgr(upl)
+    new_img = imagen_to_bgr(upl)
     if st.session_state.current_image is None or not np.array_equal(new_img, st.session_state.current_image):
         st.session_state.current_image = new_img
         st.session_state.roi_data = None
@@ -250,19 +248,76 @@ with tab3:
             else:
                 todo = []
                 if fuente == "Predefinidas":
-                    if rot30: todo.append(("rotacion_30", rotate_image(base, 30)))
-                    if rotm45: todo.append(("rotacion_-45", rotate_image(base, -45)))
-                    if esc15: todo.append(("escala_1.5", scale_image(base, 1.5)))
-                    if esc07: todo.append(("escala_0.7", scale_image(base, 0.7)))
-                    if tr1:   todo.append(("traslacion_50_100", translate_image(base, 50, 100)))
-                    if tr2:   todo.append(("traslacion_-30_80", translate_image(base, -30, 80)))
-                    if def_b: todo.append(("deformacion_barril", deform_barrel(base, 0.00001)))
-                    if def_c: todo.append(("deformacion_cojin", deform_pincushion(base, -0.00001)))
+
+                    h, w = base.shape[:2]
+                    cx, cy = w/2, h/2
+
+                    specs = []
+
+                    if rot30:
+                        specs.append({
+                            "type":"affine", "name":"rotacion_30",
+                            "tx":0, "ty":0, "angle":30, 
+                            "cx":cx, "cy":cy, "sx":1, "sy":1
+                        })
+
+                    if rotm45:
+                        specs.append({
+                            "type":"affine", "name":"rotacion_-45",
+                            "tx":0, "ty":0, "angle":-45,
+                            "cx":cx, "cy":cy, "sx":1, "sy":1
+                        })
+
+                    if esc15:
+                        specs.append({
+                            "type":"affine", "name":"escala_1.5",
+                            "tx":0, "ty":0, "angle":0,
+                            "cx":cx, "cy":cy, "sx":1.5, "sy":1.5
+                        })
+
+                    if esc07:
+                        specs.append({
+                            "type":"affine", "name":"escala_0.7",
+                            "tx":0, "ty":0, "angle":0,
+                            "cx":cx, "cy":cy, "sx":0.7, "sy":0.7
+                        })
+
+                    if tr1:
+                        specs.append({
+                            "type":"affine", "name":"traslacion_50_100",
+                            "tx":50, "ty":100, "angle":0,
+                            "cx":cx, "cy":cy, "sx":1, "sy":1
+                        })
+
+                    if tr2:
+                        specs.append({
+                            "type":"affine", "name":"traslacion_-30_80",
+                            "tx":-30, "ty":80, "angle":0,
+                            "cx":cx, "cy":cy, "sx":1, "sy":1
+                        })
+
+                    if def_b:
+                        specs.append({
+                            "type":"distortion", "name":"deformacion_barril",
+                            "k1":0.00001, "k2":0, "p1":0, "p2":0, "k3":0,
+                            "cx":None, "cy":None, "focal":10
+                        })
+
+                    if def_c:
+                        specs.append({
+                            "type":"distortion", "name":"deformacion_cojin",
+                            "k1":-0.00001, "k2":0, "p1":0, "p2":0, "k3":0,
+                            "cx":None, "cy":None, "focal":10
+                        })
+
+                    for spec in specs:
+                        nombre, img_out = apply_transform(base, spec)
+                        todo.append((nombre, img_out))
 
                 else:
                     for i, spec in enumerate(st.session_state.transform_specs):
                         try:
-                            name, img_t = apply_transform_spec(base, spec)
+                            name, img_t = apply_transform(base, spec)
                             todo.append((f"{i:02d}_{name}", img_t))
                         except Exception as e:
                             st.warning(f"Error en spec {i}: {e}")
@@ -428,11 +483,11 @@ with tab4:
                 st.session_state.tab4_t = t_state.copy()
 
             # --- Construcción de la matriz completa ---
-            M, b = affine_build_2x3(A=A, t=t_state, c=c_now, I=I)
+            M, b = affine_matrix_realtime(A=A, t=t_state, c=c_now, I=I)
 
             # --- Vista previa ---
-            view, pc, CW, CH, ox, oy = affine_preview_on_canvas(
-                img=img, scale_factor=sf, M=M, A=A, b=b, c_now=c_now
+            view, pc, CW, CH, ox, oy = apply_affine_realtime(
+                img=img, M=M, A=A, b=b, c_now=c_now
             )
 
             # Dibujar pivote en la vista
@@ -449,7 +504,7 @@ with tab4:
             with c1:
                 if st.button("Añadir a lista"):
                     st.session_state.transform_specs.append(dict(
-                        type="affine", name=name, scale_factor=float(sf),
+                        type="affine", name=name,
                         tx=float(t_state[0]), ty=float(t_state[1]),
                         angle=float(ang), cx=float(c_now[0]), cy=float(c_now[1]),
                         sx=float(sx), sy=float(sy)
@@ -482,7 +537,7 @@ with tab4:
             else:
                 center = None
 
-            prev = apply_distortion_full(img, k1, k2, p1, p2, k3, center=center, focal=50.0)
+            prev = apply_distortion(img, k1, k2, p1, p2, k3, center=center, focal=50.0)
             st.image(bgr_to_rgb(prev), caption="Vista previa", use_container_width=True)
 
             c1, c2 = st.columns(2)
