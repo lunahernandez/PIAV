@@ -1,1 +1,6 @@
+streamlit
 streamlit-cropper
+numpy
+pandas
+pillow
+opencv-python
