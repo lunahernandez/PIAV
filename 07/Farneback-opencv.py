@@ -1,3 +1,5 @@
+# https://docs.opencv.org/3.4/d4/dee/tutorial_optical_flow.html
+
 import numpy as np
 import cv2 as cv
 cap = cv.VideoCapture(cv.samples.findFile("07/videos/people2.mp4"))
