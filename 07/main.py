@@ -25,7 +25,7 @@ def get_epe(pred, gt):
     """Calcula el End-Point-Error (EPE)."""
     # El EPE es la distancia euclidiana promedio entre el flujo predicho y el GT.
     diff = pred - gt
-    epe = np.mean(np.sqrt(diff[..., 0]**2 + diff[..., 1]**2))
+    epe = np.mean(np.sqrt(diff[:,:, 0]**2 + diff[:,:, 1]**2))
     return epe
 
 def lk_flow(img1, img2):
@@ -58,7 +58,6 @@ def lk_flow(img1, img2):
 
     return flow, img_vis
 
-# --- MAIN EXECUTION ---
 
 def main():
     # 1. Carga de datos (convertir BGR a RGB)
