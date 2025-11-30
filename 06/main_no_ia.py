@@ -1,9 +1,12 @@
-from utils import (
+from utils_no_ia import (
     recortar_roi,
     ecualizar_histograma,
     aplicar_filtro_bilateral,
     realzar_crestas,
     refinar_roi,
+    comparar_huellas,
+    dibujar_curvas_error,
+    procesar_y_comparar_test
 )
 
 def main():
@@ -31,6 +34,19 @@ def main():
     print(20*"-")
     print("Preprocesado finalizado")
     print(20*"-")
+    genuinos, impostores = comparar_huellas(DB_PATH, OUT_PATH)
+    print("Generando gráficas de error (FAR/FRR)...")
+    dibujar_curvas_error(genuinos, impostores, umbral=15)
+
+    print(20*"=")
+    print("FASE DE TEST: Identificando huellas desconocidas")
+    print(20*"=")
+
+    TEST_PATH = "06/test"
+    OUT_TEST_PATH = "06/output/test"
+    DB_PROCESSED_PATH = OUT_PATH 
+
+    procesar_y_comparar_test(TEST_PATH, DB_PROCESSED_PATH, OUT_TEST_PATH)
 
 if __name__ == "__main__":
     main()
