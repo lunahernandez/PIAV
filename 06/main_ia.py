@@ -1,43 +1,44 @@
 import os
+import torch
 from utils_ia import (
     SiameseCNN,
     entrenar_siamese,
-    comparar_mismo_usuario_ia,
-    comparar_entre_usuarios_ia
+    comparar_huellas_ia,
+    dibujar_curvas_error_ia,
+    procesar_y_comparar_test_ia
 )
 
 def main():
+    OUT_PATH = "06/output"
+    TEST_PATH = "06/output/test/sobel"
 
-    out_path = "06/output"
-
-    if not os.path.isdir(out_path):
-        raise ValueError(f"La ruta {out_path} no existe. Coloca OUT en el mismo nivel que el main.")
+    if not os.path.isdir(OUT_PATH):
+        raise ValueError(f"La ruta {OUT_PATH} no existe. Verifica las carpetas.")
 
     print("\n===== CREANDO MODELO SIAMESA =====")
-    print("Paso 1. Crear el modelo siamesa")
     modelo = SiameseCNN(embedding_dim=128)
 
-    print("Paso 2. Entrenar el modelo siamesa")
     entrenar_siamese(
         modelo=modelo,
-        out_path=out_path,
+        out_path=OUT_PATH,
         epochs=10,
         lr=1e-4
     )
 
-    print("Paso 3. Comparar imágenes del mismo usuario")
-    comparar_mismo_usuario_ia(
+    genuinos, impostores = comparar_huellas_ia(
         modelo=modelo,
-        out_path=out_path,
-        umbral=0.35
+        out_path=OUT_PATH,
+        umbral=0.15
     )
 
-    print("Paso 4. Comparar entre usuarios")
-    comparar_entre_usuarios_ia(
+    print("Generando gráficas de error...")
+    dibujar_curvas_error_ia(genuinos, impostores, umbral=0.35)
+
+    procesar_y_comparar_test_ia(
         modelo=modelo,
-        out_path=out_path,
-        ref_user="crd_0811f",
-        umbral=0.05
+        test_path=TEST_PATH,
+        db_processed_path=OUT_PATH,
+        umbral=0.15
     )
 
 if __name__ == "__main__":
