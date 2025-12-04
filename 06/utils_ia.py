@@ -8,12 +8,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import norm
 
-# ==========================================
-# CÓDIGO PRESERVADO (NO MODIFICADO)
-# ==========================================
-
-# Cargar imagen
 def cargar_imagen(img_path, size=224):
+    """ Carga una imagen en escala de grises y la convierte en tensor normalizado"""
+
     img = cv.imread(img_path, cv.IMREAD_GRAYSCALE)
 
     if img is None:
@@ -26,6 +23,8 @@ def cargar_imagen(img_path, size=224):
 
 # Modelo Siamesa
 class SiameseCNN(nn.Module):
+    """ Red Siamesa para extracción de características de huellas dactilares."""
+
     def __init__(self, embedding_dim=128):
         super().__init__()
         
@@ -65,6 +64,7 @@ class SiameseCNN(nn.Module):
 
 # Dataset de pares de huellas
 class FingerprintPairsDataset(Dataset):
+    """ Dataset de pares de huellas para entrenamiento del modelo siamesa."""
 
     def __init__(self, out_path):
         self.pairs = []
@@ -110,7 +110,8 @@ class FingerprintPairsDataset(Dataset):
 
 # Entrenamiento del modelo siamesa
 def entrenar_siamese(modelo, out_path, epochs=5, lr=1e-4):
-    
+    """ Entrena el modelo siamesa con pares de huellas. """
+
     dataset = FingerprintPairsDataset(out_path)
     dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
     optimizer = torch.optim.Adam(modelo.parameters(), lr=lr)
@@ -139,25 +140,17 @@ def entrenar_siamese(modelo, out_path, epochs=5, lr=1e-4):
     print("Entrenamiento terminado.\n")
     modelo.eval()
 
-# Distancia coseno
+# FUNCION AUXILIAR: Cálculo de distancia Coseno
 def distancia_coseno(e1, e2):
+    """Calcula la distancia coseno entre dos embeddings."""
+
     sim = F.cosine_similarity(e1, e2)
     return 1 - sim.item()
 
-# ==========================================
-# NUEVAS FUNCIONES DE EVALUACIÓN Y TEST
-# ==========================================
-
+# COMPARADOR : Comparación para datos de la BD
 def comparar_huellas_ia(modelo, out_path, umbral=0.35):
-    """
-    Realiza una comparación 'Todos contra Todos' similar al método SIFT.
-    Genera tabla de resultados y estadísticas globales.
-    """
-    print("============================================================")
-    print("COMPARACIÓN MASIVA (TODOS CONTRA TODOS) - IA")
-    print("============================================================")
+    """ Realiza una comparación masiva "todos contra todos" de las huellas en out_path."""
 
-    # 1. Cargar todas las imágenes y generar embeddings
     dataset = []
     usuarios = sorted(os.listdir(out_path))
 
@@ -171,7 +164,6 @@ def comparar_huellas_ia(modelo, out_path, umbral=0.35):
         for f in imgs:
             path = os.path.join(folder, f)
             try:
-                # cargar_imagen ya devuelve [1, H, W], añadimos batch -> [1, 1, H, W]
                 t = cargar_imagen(path).unsqueeze(0) 
                 with torch.no_grad():
                     emb = modelo.forward_once(t)
@@ -194,7 +186,6 @@ def comparar_huellas_ia(modelo, out_path, umbral=0.35):
     print(f"{'HUELLA A':<25} | {'HUELLA B':<25} | {'MATCH?':<8} | {'DISTANCIA':<10} | {'RESULTADO':<25}")
     print("="*125)
 
-    # 2. Doble bucle para comparar
     for i in range(num_imgs):
         for j in range(i, num_imgs):
             
@@ -207,14 +198,12 @@ def comparar_huellas_ia(modelo, out_path, umbral=0.35):
             es_mismo_archivo = (i == j)
             es_misma_persona = (img_A['id'] == img_B['id'])
 
-            # Recopilar scores para graficar
             if not es_mismo_archivo:
                 if es_misma_persona:
                     scores_genuinos.append(dist)
                 else:
                     scores_impostores.append(dist)
 
-            # Determinar etiqueta (TP, TN, FP, FN)
             etiqueta = ""
             if es_mismo_archivo:
                 if match_algoritmo:
@@ -257,9 +246,8 @@ def comparar_huellas_ia(modelo, out_path, umbral=0.35):
     return scores_genuinos, scores_impostores
 
 def dibujar_curvas_error_ia(scores_genuinos, scores_impostores, umbral=0.35):
-    """
-    Grafica la distribución de distancias para Genuinos vs Impostores.
-    """
+    """ Dibuja las distribuciones de distancias para genuinos e impostores. """
+
     plt.figure(figsize=(10, 6))
     x_range = np.linspace(0, 1.5, 500)
 
@@ -284,19 +272,13 @@ def dibujar_curvas_error_ia(scores_genuinos, scores_impostores, umbral=0.35):
     plt.show()
 
 def procesar_y_comparar_test_ia(modelo, test_path, db_processed_path, umbral=0.35):
-    """
-    Identifica huellas desconocidas comparándolas con la base de datos (carpetas refinadas).
-    """
-    print("\n============================================================")
-    print("FASE DE TEST: Identificando huellas desconocidas")
-    print("============================================================")
+    """ Procesa imágenes de test y las compara contra la base de datos procesada. """
 
-    # 1. Preparar Base de Datos (Embeddings de referencia)
     db_embeddings = []
     users = [u for u in os.listdir(db_processed_path) if u.lower() != "test"]
 
     for user in users:
-        folder = os.path.join(db_processed_path, user, "sobel")
+        folder = os.path.join(db_processed_path, user, "refinadas")
         if not os.path.isdir(folder): continue
         
         for f in os.listdir(folder):
@@ -309,18 +291,15 @@ def procesar_y_comparar_test_ia(modelo, test_path, db_processed_path, umbral=0.3
                     db_embeddings.append({'user': user, 'file': f, 'emb': emb})
                 except: pass
     
-    # 2. Buscar archivos de test
     test_files = [f for f in os.listdir(test_path) if f.lower().endswith('.png')]
-    # Si no hay en raíz, buscar en 'refinadas' dentro de test si existiera
-    if not test_files and os.path.isdir(os.path.join(test_path, "sobel")):
-         test_path = os.path.join(test_path, "sobel")
+    if not test_files and os.path.isdir(os.path.join(test_path, "refinadas")):
+         test_path = os.path.join(test_path, "refinadas")
          test_files = [f for f in os.listdir(test_path) if f.lower().endswith('.png')]
 
     if not test_files:
         print("[ERROR] No se encontraron imágenes de test.")
         return
 
-    # 3. Identificar
     for f in test_files:
         print(f"\nIdentificando: {f}")
         try:
@@ -340,10 +319,10 @@ def procesar_y_comparar_test_ia(modelo, test_path, db_processed_path, umbral=0.3
                     match_file = db_item['file']
             
             if mejor_dist < umbral:
-                print(f"  >>> IDENTIFICADO: {mejor_user}")
-                print(f"      (Match con {match_file}, Distancia: {mejor_dist:.4f})")
+                print(f"[IDENTIFICADO] {mejor_user}")
+                print(f"[Match con {match_file}, Distancia: {mejor_dist:.4f}]")
             else:
-                print(f"  >>> NO IDENTIFICADO (Más cercano: {mejor_user}, Dist: {mejor_dist:.4f})")
+                print(f"[NO IDENTIFICADO] (Más cercano: {mejor_user}, Dist: {mejor_dist:.4f})")
 
         except Exception as e:
             print(f"Error procesando {f}: {e}")
