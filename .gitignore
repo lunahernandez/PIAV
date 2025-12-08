@@ -33,3 +33,5 @@ venv/
 07/videos_with_ground_truth
 07/yolo11x-pose.pt
 07/output/yolo_pose.mp4
+07/yolov8x-pose-p6.pt
+yolo11x-pose.pt
