@@ -35,3 +35,4 @@ venv/
 07/output/yolo_pose.mp4
 07/yolov8x-pose-p6.pt
 yolo11x-pose.pt
+07/examples/yolov8x-pose-p6.pt
