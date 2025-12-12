@@ -1,60 +1,54 @@
 from utils_no_ia import (
-    recortar_roi,
-    ecualizar_histograma,
-    aplicar_filtro_bilateral,
-    realzar_crestas,
-    refinar_roi,
-    comparar_huellas,
-    dibujar_curvas_error,
-    procesar_y_comparar_test
+    ejecutar_pipeline_completo,
+    evaluar_configuracion_sift,
+    gestionar_optimizacion_sift,
+    calcular_umbral_optimo,
+    dibujar_gaussiana,
+    dibujar_det,
+    test_autenticacion_usuario
 )
-import os
 
 def main():
+    # --- CONFIGURACIÓN ---
+    DB_PATH = "data"
+    OUT_PATH = "output"
+    TEST_PATH = "test"
+    OUT_TEST_PATH = "output/test"
+    PARAMS_FILE = "mejor_config_sift.json"
 
-    DB_PATH = r"06/data"
-    OUT_PATH = "06/output"
+    # 1. PREPROCESAMIENTO
+    print("\n--- FASE 1: PREPROCESAMIENTO ---")
+    ejecutar_pipeline_completo(DB_PATH, OUT_PATH)
+    ejecutar_pipeline_completo(TEST_PATH, OUT_TEST_PATH)
+
+    # 2. OPTIMIZACIÓN SIFT (ENTRENAMIENTO)
+    print("\n--- FASE 2: ENTRENAMIENTO Y PARÁMETROS ---")
+    mejor_config = gestionar_optimizacion_sift(OUT_PATH, PARAMS_FILE)
     
-    TEST_PATH = "06/test"
-    OUT_TEST_PATH = "06/output/test"
+    # Calculamos métricas de entrenamiento para decidir el umbral
+    print("Calculando métricas de entrenamiento...")
+    genuinos_train, impostores_train = evaluar_configuracion_sift(OUT_PATH, mejor_config)
+    
+    mejor_umbral = calcular_umbral_optimo(genuinos_train, impostores_train)
+    
+    # Visualización de entrenamiento: Distribución
+    print(f"Umbral óptimo calculado: {mejor_umbral:.2f}%")
+    dibujar_gaussiana(genuinos_train, impostores_train, mejor_umbral)
 
-    print(20*"=")
-    print("PREPROCESADO BASE DE DATOS (DATA)")
-    print(20*"=")
-    print("Paso 1. Buscar y segmentar la ROI")
-    recortar_roi(DB_PATH, OUT_PATH, ventana=500, paso=15)  
-    print("Paso 2. Ecualizar y normalizar el histograma")
-    ecualizar_histograma(DB_PATH, OUT_PATH)
-    print("Paso 3. Aplicar un filtro bilateral")
-    aplicar_filtro_bilateral(DB_PATH, OUT_PATH)
-    print("Paso 4. Aplicar un realce de crestas")
-    realzar_crestas(DB_PATH, OUT_PATH)
-    print("Paso 5. Refinar la ROI eliminando bordes falsos")
-    refinar_roi(DB_PATH, OUT_PATH)
+    # 3. TEST (EVALUACIÓN REAL)
+    print("\n--- FASE 3: MODO TEST Y EVALUACIÓN ---")
+    
+    # Ejecutamos el test y RECOGEMOS los datos resultantes
+    test_gen, test_imp = test_autenticacion_usuario(OUT_TEST_PATH, OUT_PATH, mejor_config, mejor_umbral)
 
-    print(20*"=")
-    print("PREPROCESADO IMÁGENES DE TEST")
-    print(20*"=")
-    print("Paso 1. ROI (Test)")
-    recortar_roi(TEST_PATH, OUT_TEST_PATH, ventana=500, paso=15)
-    print("Paso 2. Ecualizar (Test)")
-    ecualizar_histograma(TEST_PATH, OUT_TEST_PATH)
-    print("Paso 3. Bilateral (Test)")
-    aplicar_filtro_bilateral(TEST_PATH, OUT_TEST_PATH)
-    print("Paso 4. Sobel (Test)")
-    realzar_crestas(TEST_PATH, OUT_TEST_PATH)
-    print("Paso 5. Refinar (Test)")
-    refinar_roi(TEST_PATH, OUT_TEST_PATH)
-
-    genuinos, impostores = comparar_huellas(DB_PATH, OUT_PATH)
-    print("Generando gráficas de error (FAR/FRR)...")
-    dibujar_curvas_error(genuinos, impostores, umbral=15)
-
-    print(20*"=")
-    print("FASE DE TEST: Identificando huellas desconocidas")
-    print(20*"=")
-    DB_PROCESSED_PATH = OUT_PATH 
-    procesar_y_comparar_test(TEST_PATH, DB_PROCESSED_PATH, OUT_TEST_PATH)
+    # Gráfica de Rendimiento (Con los datos del test recién ejecutado)
+    print("\nGenerando Curva DET de los resultados del TEST...")
+    
+    # Aviso si hay pocos datos
+    if len(test_gen) + len(test_imp) < 5:
+        print("NOTA: La curva DET puede verse incompleta o vacía porque hay muy pocas imágenes en el Test.")
+        
+    dibujar_det(test_gen, test_imp, mejor_umbral)
 
 if __name__ == "__main__":
     main()

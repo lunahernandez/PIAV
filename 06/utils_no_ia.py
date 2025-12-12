@@ -1,460 +1,319 @@
-from fileinput import filename
 import os
 import cv2 as cv
 import numpy as np
-from pathlib import Path
 import matplotlib.pyplot as plt
+import json
 from scipy.stats import norm
 
-# PREPROCESADO: Buscar y segmentar la ROI
+# --- PREPROCESAMIENTO ---
+# (Las funciones de preprocesamiento se mantienen igual, las omito para ahorrar espacio)
 def mejor_roi_por_negros(image, ventana=500, paso=20):
-    """Encuentra la región de interés (ROI) en la imagen que contiene la mayor cantidad de píxeles negros."""
-
     H, W = image.shape
     w = min(ventana, W, H)
     h = min(ventana, W, H)
     mejor_ventana = (0, 0, w, h)
     mejor_suma = -1
-
     for y in range(0, H - h + 1, paso):
         for x in range(0, W - w + 1, paso):
             region = image[y:y+h, x:x+w]
             suma = np.sum(region == 0)
-
             if suma > mejor_suma:
                 mejor_suma = suma
                 mejor_ventana = (x, y, w, h)
-
     return mejor_ventana
 
 def recortar_roi(db_path, out_path, ventana=500, paso=15):
-    """
-    Detecta si db_path contiene carpetas de usuarios (Data) o imágenes sueltas (Test)
-    y aplica el recorte ROI guardando en la estructura correspondiente.
-    """
-
-    if not os.path.exists(db_path):
-        return
-
+    if not os.path.exists(db_path): return
     items = os.listdir(db_path)
-
-    images = [f for f in items if f.lower().endswith(('.png', '.jpg'))] # Datos de Test
-    users = [d for d in items if os.path.isdir(os.path.join(db_path, d))] # Datos de Data
-
-    tareas = [] # Lista de tuplas (origen, destino)
-
-    if len(images) > 0:
-        # MODO TEST
+    images = [f for f in items if f.lower().endswith(('.png', '.jpg'))]
+    users = [d for d in items if os.path.isdir(os.path.join(db_path, d))]
+    tareas = []
+    if images:
         dst_folder = os.path.join(out_path, "roi")
         tareas.append((db_path, dst_folder))
     else:
-        # MODO DATA
         for user in users:
-            src = os.path.join(db_path, user)
-            dst = os.path.join(out_path, user, "roi")
-            tareas.append((src, dst))
-
+            tareas.append((os.path.join(db_path, user), os.path.join(out_path, user, "roi")))
     for src_dir, dst_dir in tareas:
         os.makedirs(dst_dir, exist_ok=True)
-        files = [f for f in os.listdir(src_dir) if f.lower().endswith(".png")]
-        
-        for filename in files:
-            img_path = os.path.join(src_dir, filename)
-            img = cv.imread(img_path)
-
+        for filename in [f for f in os.listdir(src_dir) if f.lower().endswith(".png")]:
+            img = cv.imread(os.path.join(src_dir, filename))
             if img is None: continue
-
             gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
             _, image = cv.threshold(gray, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)
             x, y, w, h = mejor_roi_por_negros(image, ventana=ventana, paso=paso)
-            roi = img[y:y+h, x:x+w]
-            cv.imwrite(os.path.join(dst_dir, filename), roi)
+            cv.imwrite(os.path.join(dst_dir, filename), img[y:y+h, x:x+w])
 
-
-# PREPROCESADO: Ecualizar y normalizar el histograma
-def ecualizar_histograma(db_path, out_path):
-    """Ecualiza y normaliza el histograma de las imágenes en db_path y guarda los resultados en out_path."""
-
+def procesar_fase(fase_func, input_folder, output_folder, db_path, out_base):
     items = os.listdir(db_path)
-    images = [f for f in items if f.lower().endswith(('.png', '.jpg'))]
     users = [d for d in items if os.path.isdir(os.path.join(db_path, d))]
-
     tareas = []
-
-    if len(images) > 0:
-        # MODO TEST
-        src = os.path.join(out_path, "roi")
-        dst = os.path.join(out_path, "equalized")
-        if os.path.isdir(src):
-            tareas.append((src, dst))
+    check_path = os.path.join(out_base, input_folder)
+    if os.path.exists(check_path) and any(f.endswith('.png') for f in os.listdir(check_path)):
+         tareas.append((check_path, os.path.join(out_base, output_folder)))
     else:
-        # MODO DATA
         for user in users:
-            src = os.path.join(out_path, user, "roi")
-            dst = os.path.join(out_path, user, "equalized")
+            src = os.path.join(out_base, user, input_folder)
             if os.path.isdir(src):
-                tareas.append((src, dst))
-
+                tareas.append((src, os.path.join(out_base, user, output_folder)))     
     for src_dir, dst_dir in tareas:
         os.makedirs(dst_dir, exist_ok=True)
-        image_files = [f for f in os.listdir(src_dir) if f.lower().endswith('.png')]
+        for filename in [f for f in os.listdir(src_dir) if f.lower().endswith('.png')]:
+            fase_func(src_dir, dst_dir, filename)
 
-        for filename in image_files:
-            img_path = os.path.join(src_dir, filename)
-            image = cv.imread(img_path)
-            if image is None: continue
-            gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
-            equalized = cv.equalizeHist(gray)
-            cv.imwrite(os.path.join(dst_dir, filename), equalized)
+def fase_ecualizar(src, dst, name):
+    img = cv.imread(os.path.join(src, name))
+    if img is not None:
+        cv.imwrite(os.path.join(dst, name), cv.equalizeHist(cv.cvtColor(img, cv.COLOR_BGR2GRAY)))
 
+def fase_bilateral(src, dst, name):
+    img = cv.imread(os.path.join(src, name))
+    if img is not None:
+        cv.imwrite(os.path.join(dst, name), cv.bilateralFilter(cv.cvtColor(img, cv.COLOR_BGR2GRAY), 10, 10, 10))
 
-# PREPROCESADO: Aplicar un filtro bilateral
-def aplicar_filtro_bilateral(db_path, out_path):
-    """Aplica un filtro bilateral a las imágenes en db_path y guarda los resultados en out_path."""
+def fase_sobel(src, dst, name):
+    img = cv.imread(os.path.join(src, name))
+    if img is not None:
+        g = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+        sx = cv.Sobel(g, cv.CV_64F, 1, 0, ksize=3)
+        sy = cv.Sobel(g, cv.CV_64F, 0, 1, ksize=3)
+        m = cv.magnitude(sx, sy)
+        cv.imwrite(os.path.join(dst, name), cv.normalize(m, None, 0, 255, cv.NORM_MINMAX).astype(np.uint8))
 
-    items = os.listdir(db_path)
-    images = [f for f in items if f.lower().endswith(('.png', '.jpg'))]
-    users = [d for d in items if os.path.isdir(os.path.join(db_path, d))]
+def fase_refinar(src, dst, name):
+    img = cv.imread(os.path.join(src, name), cv.IMREAD_GRAYSCALE)
+    if img is not None:
+        h, w = img.shape
+        m = int(min(h, w) * 0.03)
+        crop = img[m:h-m, m:w-m]
+        cl = cv.morphologyEx(crop, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_ELLIPSE, (3, 3)), iterations=1)
+        cv.imwrite(os.path.join(dst, name), cv.normalize(cv.medianBlur(cl, 3), None, 0, 255, cv.NORM_MINMAX))
 
-    tareas = []
+def ejecutar_pipeline_completo(raw_path, out_path):
+    print(f"Procesando: {raw_path} -> {out_path}")
+    recortar_roi(raw_path, out_path)
+    procesar_fase(fase_ecualizar, "roi", "equalized", raw_path, out_path)
+    procesar_fase(fase_bilateral, "equalized", "bilateral_filter", raw_path, out_path)
+    procesar_fase(fase_sobel, "bilateral_filter", "sobel", raw_path, out_path)
+    procesar_fase(fase_refinar, "sobel", "refinadas", raw_path, out_path)
 
-    if len(images) > 0:
-        # MODO TEST
-        src = os.path.join(out_path, "equalized")
-        dst = os.path.join(out_path, "bilateral_filter")
-        if os.path.isdir(src):
-            tareas.append((src, dst))
-    else:
-        # MODO DATA
-        for user in users:
-            src = os.path.join(out_path, user, "equalized")
-            dst = os.path.join(out_path, user, "bilateral_filter")
-            if os.path.isdir(src):
-                tareas.append((src, dst))
+# --- SIFT Y MÉTRICAS ---
 
-    for src_dir, dst_dir in tareas:
-        os.makedirs(dst_dir, exist_ok=True)
-        image_files = [f for f in os.listdir(src_dir) if f.lower().endswith('.png')]
-
-        for filename in image_files:
-            img_path = os.path.join(src_dir, filename)
-            image = cv.imread(img_path)
-            if image is None: continue
-            gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
-            bilateral = cv.bilateralFilter(gray, d=10, sigmaColor=10, sigmaSpace=10)
-            cv.imwrite(os.path.join(dst_dir, filename), bilateral)
-
-
-# PREPROCESADO: Aplicar un realce de crestas
-def realzar_crestas(db_path, out_path):
-    """Aplica un realce de crestas a las imágenes en db_path y guarda los resultados en out_path."""
-
-    items = os.listdir(db_path)
-    images = [f for f in items if f.lower().endswith(('.png', '.jpg'))]
-    users = [d for d in items if os.path.isdir(os.path.join(db_path, d))]
-
-    tareas = []
-
-    if len(images) > 0:
-        # MODO TEST
-        src = os.path.join(out_path, "bilateral_filter")
-        dst = os.path.join(out_path, "sobel")
-        if os.path.isdir(src):
-            tareas.append((src, dst))
-    else:
-        # MODO DATA
-        for user in users:
-            src = os.path.join(out_path, user, "bilateral_filter")
-            dst = os.path.join(out_path, user, "sobel")
-            if os.path.isdir(src):
-                tareas.append((src, dst))
-
-    for src_dir, dst_dir in tareas:
-        os.makedirs(dst_dir, exist_ok=True)
-        image_files = [f for f in os.listdir(src_dir) if f.lower().endswith('.png')]
-
-        for filename in image_files:
-            img_path = os.path.join(src_dir, filename)
-            image = cv.imread(img_path)
-            if image is None: continue
-            gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
-            sobelx = cv.Sobel(gray, cv.CV_64F, 1, 0, ksize=3)
-            sobely = cv.Sobel(gray, cv.CV_64F, 0, 1, ksize=3)
-
-            sobel = cv.magnitude(sobelx, sobely)
-            sobel_8u = cv.normalize(sobel, None, 0, 255, cv.NORM_MINMAX).astype(np.uint8)
-            cv.imwrite(os.path.join(dst_dir, filename), sobel_8u)
-
-# PREPROCESADO: Refinar la ROI
-def refinar_roi(db_path, out_path):
-    """Refina la ROI de las imágenes en db_path y guarda los resultados en out_path."""
-
-    items = os.listdir(db_path)
-    images = [f for f in items if f.lower().endswith(('.png', '.jpg'))]
-    users = [d for d in items if os.path.isdir(os.path.join(db_path, d))]
-
-    tareas = []
-
-    if len(images) > 0:
-        # MODO TEST
-        src = os.path.join(out_path, "sobel")
-        dst = os.path.join(out_path, "refinadas")
-        if os.path.isdir(src):
-            tareas.append((src, dst))
-    else:
-        # MODO DATA
-        for user in users:
-            src = os.path.join(out_path, user, "sobel")
-            dst = os.path.join(out_path, user, "refinadas")
-            if os.path.isdir(src):
-                tareas.append((src, dst))
-
-    for src_dir, dst_dir in tareas:
-        os.makedirs(dst_dir, exist_ok=True)
-        image_files = [f for f in os.listdir(src_dir) if f.lower().endswith(".png")]
-
-        for filename in image_files:
-            img_path = os.path.join(src_dir, filename)
-            image = cv.imread(img_path, cv.IMREAD_GRAYSCALE)
-            if image is None: continue
-
-            h, w = image.shape
-            pct = 0.03
-            m = int(min(h, w) * pct)
-            crop = image[m:h-m, m:w-m]
-            kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, (3, 3))
-            clean = cv.morphologyEx(crop, cv.MORPH_OPEN, kernel, iterations=1)
-            clean = cv.medianBlur(clean, 3)
-            refinada = cv.normalize(clean, None, 0, 255, cv.NORM_MINMAX)
-            cv.imwrite(os.path.join(dst_dir, filename), refinada)
-
-# FUNCIÓN AUXILIAR: Calcular similitud entre dos descriptores
-def calcular_similitud(bf, kp_a, des_a, kp_b, des_b):
-    """Compara dos conjuntos de descriptores y devuelve inliers, ratio y si es match."""
-
-    matches = bf.knnMatch(des_a, des_b, k=2)
-    good = [m for m, n in matches if m.distance < 0.8 * n.distance]
-
-    inliers = 0
-    ratio = 0.0
-    es_match = False
-
-    if len(good) >= 8:
-        src_pts = np.float32([kp_a[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-        dst_pts = np.float32([kp_b[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-        
-        try:
-            _, mask = cv.findHomography(src_pts, dst_pts, cv.RANSAC, 5.0)
-            if mask is not None:
-                inliers = int(mask.sum())
-                if len(good) > 0:
-                    ratio = (inliers / len(good)) * 100.0
-                
-                if inliers >= 8 and ratio >= 15:
-                    es_match = True
-        except Exception:
-            pass
-
-    return inliers, ratio, es_match
-
-# FUNCIÓN AUXILIAR: Cargar dataset y extraer descriptores SIFT
 def cargar_dataset(out_path, sift):
-    """Carga las imágenes procesadas y genera descriptores SIFT."""
-
     dataset = []
-    print("\n[INFO] Cargando imágenes y generando descriptores SIFT...")
-    
-    users = sorted([u for u in os.listdir(out_path) if u.lower() != "test"])
-    
+    users = sorted([u for u in os.listdir(out_path) 
+                   if os.path.isdir(os.path.join(out_path, u)) and u.lower() != "test"])
     for user in users:
         folder = os.path.join(out_path, user, "refinadas")
         if not os.path.isdir(folder): continue
-        
-        files = sorted([f for f in os.listdir(folder) if f.lower().endswith(".png")])
-        
-        for f in files:
-            path = os.path.join(folder, f)
-            img = cv.imread(path, cv.IMREAD_GRAYSCALE)
-            if img is None: continue
-            
-            kp, des = sift.detectAndCompute(cv.bitwise_not(img), None)
-            
-            if des is not None:
-                dataset.append({
-                    'id': user,
-                    'filename': f,
-                    'kp': kp, 
-                    'des': des
-                })
-                
-    print(f"[INFO] Se han cargado {len(dataset)} huellas válidas.")
+        for f in sorted([x for x in os.listdir(folder) if x.lower().endswith(".png")]):
+            img = cv.imread(os.path.join(folder, f), cv.IMREAD_GRAYSCALE)
+            if img is not None:
+                kp, des = sift.detectAndCompute(cv.bitwise_not(img), None)
+                if des is not None and len(kp) > 0:
+                    dataset.append({'id': user, 'filename': f, 'kp': kp, 'des': des})
     return dataset
 
-# COMPARAR HUELLAS: Función principal para comparar huellas en la base de datos
-def comparar_huellas(db_path, out_path, nfeatures=1500):
-    """Compara todas las huellas en la base de datos y devuelve listas de scores genuinos e impostores."""
+def calcular_similitud_raw(bf, kp_a, des_a, kp_b, des_b):
+    if des_a is None or des_b is None: return 0, 0.0
+    try:
+        matches = bf.knnMatch(des_a, des_b, k=2)
+        good = [m for m, n in matches if m.distance < 0.75 * n.distance]
+        if len(good) >= 4:
+            src = np.float32([kp_a[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+            dst = np.float32([kp_b[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+            _, mask = cv.findHomography(src, dst, cv.RANSAC, 5.0)
+            if mask is not None:
+                return int(mask.sum()), (int(mask.sum()) / len(good)) * 100.0
+    except: pass
+    return 0, 0.0
 
-    sift = cv.SIFT_create(nfeatures=nfeatures, contrastThreshold=0.01, edgeThreshold=10, sigma=1.4)
+def evaluar_configuracion_sift(out_path, params):
+    sift = cv.SIFT_create(**params)
     bf = cv.BFMatcher()
-    
     dataset = cargar_dataset(out_path, sift)
-    num_imgs = len(dataset)
-    
-    scores_genuinos = []
-    scores_impostores = []
-    stats = {"TP": 0, "TN": 0, "FP": 0, "FN": 0}
+    gen, imp = [], []
+    step = 1 if len(dataset) < 50 else 2
+    for i in range(0, len(dataset), step):
+        for j in range(i + 1, len(dataset), step):
+            img_A, img_B = dataset[i], dataset[j]
+            _, ratio = calcular_similitud_raw(bf, img_A['kp'], img_A['des'], img_B['kp'], img_B['des'])
+            if img_A['id'] == img_B['id']: gen.append(ratio)
+            else: imp.append(ratio)
+    return gen, imp
 
-    print("\n" + "="*125)
-    print(f"{'HUELLA A':<25} | {'HUELLA B':<25} | {'MATCH?':<8} | {'INL':<4} | {'RATIO':<6} | {'RESULTADO'}")
-    print("="*125)
+def gestionar_optimizacion_sift(out_path, params_file):
+    mejor_config = {}
+    buscar = True
+    if os.path.exists(params_file):
+        print(f"Archivo de configuración encontrado: {params_file}")
+        if input("¿Recalcular hiperparámetros (s/n)? ").lower().strip() != 's':
+            buscar = False
+            with open(params_file, 'r') as f: mejor_config = json.load(f)
+            print(f"Configuración cargada: {mejor_config}")
+    if buscar:
+        print("Iniciando búsqueda de mejores parámetros...")
+        param_grid = {'nfeatures': [1000, 2000], 'contrastThreshold': [0.01, 0.03], 'edgeThreshold': [10, 15], 'sigma': [1.4, 1.6]}
+        mejor_eer = 100.0
+        import itertools
+        keys, values = zip(*param_grid.items())
+        total_combs = [dict(zip(keys, v)) for v in itertools.product(*values)]
+        for idx, params in enumerate(total_combs):
+            print(f"Probando [{idx+1}/{len(total_combs)}]: {params} ...", end="")
+            gen, imp = evaluar_configuracion_sift(out_path, params)
+            if not gen or not imp: 
+                print(" Sin datos.")
+                continue
+            umbrales = np.linspace(0, 100, 50)
+            diffs = [abs((np.sum(np.array(gen) < u)/len(gen)) - (np.sum(np.array(imp) >= u)/len(imp))) for u in umbrales]
+            eer_local = min(diffs) * 100
+            print(f" EER aprox: {eer_local:.2f}")
+            if eer_local < mejor_eer:
+                mejor_eer = eer_local
+                mejor_config = params
+        print(f"Mejor configuración guardada con EER ~{mejor_eer:.2f}")
+        with open(params_file, 'w') as f: json.dump(mejor_config, f)
+    return mejor_config
 
-    for i in range(num_imgs):
-        for j in range(i, num_imgs):
-            
-            img_A = dataset[i]
-            img_B = dataset[j]
-            
-            inliers, ratio, match_algoritmo = calcular_similitud(
-                bf, img_A['kp'], img_A['des'], img_B['kp'], img_B['des']
-            )
+def calcular_umbral_optimo(genuinos, impostores):
+    umbrales = np.linspace(0, 100, 500)
+    gen_arr, imp_arr = np.array(genuinos), np.array(impostores)
+    diffs = []
+    for u in umbrales:
+        frr = np.sum(gen_arr < u) / len(gen_arr) if len(gen_arr) else 0
+        far = np.sum(imp_arr >= u) / len(imp_arr) if len(imp_arr) else 0
+        diffs.append(abs(frr*100 - far*100))
+    return umbrales[np.argmin(diffs)]
 
-            es_mismo_archivo = (i == j)
-            es_misma_persona = (img_A['id'] == img_B['id'])
-            
-            etiqueta = "TN"
-            
-            if es_mismo_archivo:
-                etiqueta = "TP (Auto)" if match_algoritmo else "FN (Error)"
-                stats["TP" if match_algoritmo else "FN"] += 1
-            elif es_misma_persona:
-                etiqueta = "TP" if match_algoritmo else "FN"
-                stats["TP" if match_algoritmo else "FN"] += 1
-                scores_genuinos.append(ratio)
-            else:
-                etiqueta = "FP" if match_algoritmo else "TN"
-                stats["FP" if match_algoritmo else "TN"] += 1
-                scores_impostores.append(ratio)
-
-            print(f"{img_A['filename'][:23]:<25} | {img_B['filename'][:23]:<25} | {str(match_algoritmo):<8} | {inliers:<4} | {ratio:.1f}% | {etiqueta}")
-
-    total = sum(stats.values())
-    print("="*125)
-    print(f"RESUMEN: Total {total} | Aciertos: {stats['TP']+stats['TN']} | Fallos: {stats['FP']+stats['FN']}")
-    print(f"TP: {stats['TP']} | TN: {stats['TN']} | FP: {stats['FP']} | FN: {stats['FN']}")
-    print("="*125)
-    
-    return scores_genuinos, scores_impostores
-
-# GRAFICA : Función para dibujar las curvas de error
-def dibujar_curvas_error(scores_genuinos, scores_impostores, umbral=15):
-    """Dibuja las distribuciones de scores genuinos e impostores con un umbral indicado."""
-
-    plt.figure(figsize=(10, 6))
-    
-    x_range = np.linspace(0, 100, 500)
-
-    if len(scores_impostores) > 1:
-        mu_imp, std_imp = norm.fit(scores_impostores)
-        p_imp = norm.pdf(x_range, mu_imp, std_imp)
-        plt.plot(x_range, p_imp, 'b-', lw=2, label='Impostores (Distinta Persona)')
-        plt.fill_between(x_range, p_imp, alpha=0.2, color='blue')
-    
-    if len(scores_genuinos) > 1:
-        mu_gen, std_gen = norm.fit(scores_genuinos)
-        p_gen = norm.pdf(x_range, mu_gen, std_gen)
-        plt.plot(x_range, p_gen, 'r-', lw=2, label='Genuinos (Misma Persona)')
-        plt.fill_between(x_range, p_gen, alpha=0.2, color='red')
-
-    plt.axvline(x=umbral, color='k', linestyle='--', label=f'Umbral ({umbral}%)')
-    plt.title('Distribución de Puntuaciones (Ratio de Similitud)')
-    plt.xlabel('Score (Ratio %)')
-    plt.ylabel('Densidad de Probabilidad')
-    plt.legend()
+def dibujar_gaussiana(genuinos, impostores, mejor_umbral):
+    plt.figure(figsize=(8, 6))
+    x = np.linspace(0, 100, 500)
+    plt.gca().set_facecolor('#f0f0f0')
+    if len(impostores) > 1:
+        mu, std = norm.fit(impostores)
+        y = norm.pdf(x, mu, std)
+        plt.plot(x, y, color='tab:blue', lw=3, label='Impostores')
+        plt.fill_between(x, y, 0, where=(x >= mejor_umbral), facecolor='tab:blue', alpha=0.4, hatch='///', label='FAR')
+    if len(genuinos) > 1:
+        mu, std = norm.fit(genuinos)
+        y = norm.pdf(x, mu, std)
+        plt.plot(x, y, color='tab:orange', lw=3, label='Genuinos')
+        plt.fill_between(x, y, 0, where=(x < mejor_umbral), facecolor='tab:orange', alpha=0.4, hatch='///', label='FRR')
+    plt.axvline(x=mejor_umbral, color='k', linestyle='--', label=f'Umbral {mejor_umbral:.1f}%')
+    plt.title('1. Zonas de Error (Entrenamiento)')
+    plt.xlabel('Score (Similitud %)')
+    plt.ylabel('Densidad')
+    plt.legend(loc='upper right')
     plt.grid(True, alpha=0.3)
-    plt.xlim(0, 100)
-    print("[GRAFICA] Generando ventana de gráfico...")
+    plt.tight_layout()
     plt.show()
 
-# TEST : Función para testear (MODIFICADA: SIN PREPROCESAMIENTO INTERNO)
-def procesar_y_comparar_test(
-    test_path, 
-    db_processed_path, 
-    out_test_path,
-    ventana=500, 
-    paso=15
-):
-    """Procesa las imágenes de test ya preprocesadas y las compara contra la base de datos procesada."""
-
-    source_path = os.path.join(out_test_path, "refinadas")
-    print(f"\n[TEST] Buscando imágenes PROCESADAS en: {source_path}")
+def dibujar_det(genuinos, impostores, mejor_umbral):
+    """Dibuja la curva DET. Protegida contra falta de datos."""
+    plt.figure(figsize=(8, 6))
     
-    if not os.path.isdir(source_path):
-        print(f"[ERROR] No existe la carpeta procesada: {source_path}")
+    # PROTECCIÓN: Si no hay datos (porque en el test solo hay 2 fotos iguales), avisar.
+    if len(genuinos) == 0 and len(impostores) == 0:
+        plt.text(0.5, 0.5, "NO HAY DATOS SUFICIENTES\nPARA GENERAR CURVA DET", 
+                 horizontalalignment='center', verticalalignment='center', fontsize=14)
+        plt.title('2. Curva DET (Sin datos)')
+        plt.show()
         return
 
-    test_files = [f for f in os.listdir(source_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-
-    if not test_files:
-        print("[ERROR] No se encontraron imágenes procesadas.")
-        return
-
-    test_images_processed = {} 
-
-    print(f"[TEST] Cargando {len(test_files)} imágenes para identificar...")
-
-    for filename in test_files:
-        img_path = os.path.join(source_path, filename)
-        img = cv.imread(img_path, cv.IMREAD_GRAYSCALE)
-        
-        if img is not None:
-            test_images_processed[filename] = img
-            print(f"Imagen Cargada: {filename}")
-
-    print(f"\n[AUTH] Iniciando autenticación contra la base de datos...")
+    far_l, frr_l = [], []
+    g_arr, i_arr = np.array(genuinos), np.array(impostores)
     
-    if not os.path.exists(db_processed_path):
-        print(f"[ERROR] No existe la carpeta de datos procesados: {db_processed_path}")
-        return
+    for u in np.linspace(0, 100, 1000):
+        # Evitamos división por cero si alguna lista está vacía
+        frr = (np.sum(g_arr < u) / len(g_arr) * 100) if len(g_arr) > 0 else 0
+        far = (np.sum(i_arr >= u) / len(i_arr) * 100) if len(i_arr) > 0 else 0
+        frr_l.append(frr)
+        far_l.append(far)
 
-    sift = cv.SIFT_create(nfeatures=1500, contrastThreshold=0.01, edgeThreshold=10, sigma=1.4)
+    plt.plot(far_l, frr_l, 'k-', lw=3, label='Rendimiento del Test')
+    plt.plot([0, 100], [0, 100], 'k--', alpha=0.2)
+    
+    # Punto operativo actual
+    f_op = (np.sum(i_arr >= mejor_umbral) / len(i_arr) * 100) if len(i_arr) > 0 else 0
+    r_op = (np.sum(g_arr < mejor_umbral) / len(g_arr) * 100) if len(g_arr) > 0 else 0
+    
+    plt.plot(f_op, r_op, 'rx', markersize=14, markeredgewidth=3, label=f'Resultados (Umb={mejor_umbral:.1f})')
+    
+    plt.title('2. Curva DET (Resultados del TEST)')
+    plt.xlabel('Falsa Aceptación (FAR %)')
+    plt.ylabel('Falso Rechazo (FRR %)')
+    plt.legend()
+    plt.grid(True)
+    
+    # Zoom automático seguro
+    xlim_max = max(10, f_op*4) if f_op > 0 else 100
+    ylim_max = max(10, r_op*4) if r_op > 0 else 100
+    plt.xlim([0, xlim_max])
+    plt.ylim([0, ylim_max])
+    plt.tight_layout()
+    plt.show()
+
+def test_autenticacion_usuario(test_path, out_path_db, params, umbral):
+    """
+    Menú interactivo y ejecución del test.
+    AHORA RETORNA LAS LISTAS DE SCORES DEL TEST (GENUINOS E IMPOSTORES).
+    """
+    users = sorted([d for d in os.listdir(out_path_db) if os.path.isdir(os.path.join(out_path_db, d)) and d.lower() != "test"])
+    if not users:
+        print("No hay usuarios en la BD.")
+        return [], []
+
+    print("\n--- SELECCIÓN DE USUARIO REFERENCIA ---")
+    for i, u in enumerate(users): print(f"[{i}] {u}")
+    
+    sel = input(f"Elige usuario (Enter={users[0]}): ").strip()
+    ref_user = users[0]
+    
+    if sel.isdigit() and int(sel) < len(users): ref_user = users[int(sel)]
+    elif sel in users: ref_user = sel
+    
+    print(f"\nVerificando contra: {ref_user} (Umbral: {umbral:.2f})")
+    
+    sift = cv.SIFT_create(**params)
     bf = cv.BFMatcher()
-
-    dataset_db = cargar_dataset(db_processed_path, sift)
+    ref_dir = os.path.join(out_path_db, ref_user, "refinadas")
+    refs = []
     
-    print(f"[AUTH] Comparando contra {len(dataset_db)} huellas registradas.")
+    if os.path.exists(ref_dir):
+        for f in os.listdir(ref_dir):
+            img = cv.imread(os.path.join(ref_dir, f), cv.IMREAD_GRAYSCALE)
+            if img is not None:
+                kp, des = sift.detectAndCompute(cv.bitwise_not(img), None)
+                if des is not None: refs.append((kp, des))
+    
+    test_dir = os.path.join(test_path, "refinadas")
+    print(f"{'ARCHIVO':<30} | {'SCORE':<6} | {'RESULTADO'}")
+    print("-" * 50)
+    
+    # Listas para guardar los resultados DE ESTE TEST
+    test_genuinos = []
+    test_impostores = []
 
-    for test_name, test_img in test_images_processed.items():
-        print("\n" + "-"*60)
-        print(f"Identificando huella desconocida: {test_name}")
-
-        test_img_inv = cv.bitwise_not(test_img)
-        kp_test, des_test = sift.detectAndCompute(test_img_inv, None)
-        
-        if des_test is None:
-            print("  (Warning) Sin rasgos suficientes para identificar.")
-            continue
+    if os.path.exists(test_dir):
+        for f in os.listdir(test_dir):
+            img = cv.imread(os.path.join(test_dir, f), cv.IMREAD_GRAYSCALE)
+            if img is None: continue
+            kp, des = sift.detectAndCompute(cv.bitwise_not(img), None)
             
-        mejor_match_user = "Desconocido"
-        mejor_inliers = 0
-        mejor_ratio = 0.0
-        candidato_fichero = ""
+            best = 0.0
+            for r_kp, r_des in refs:
+                _, ratio = calcular_similitud_raw(bf, kp, des, r_kp, r_des)
+                if ratio > best: best = ratio
+            
+            res = "ACEPTADO" if best >= umbral else "RECHAZADO"
+            print(f"{f:<30} | {best:<6.2f} | {res}")
 
-        for db_item in dataset_db:
-            inliers, ratio, _ = calcular_similitud(
-                bf, kp_test, des_test, db_item['kp'], db_item['des']
-            )
-
-            if inliers > mejor_inliers and inliers >= 8:
-                mejor_inliers = inliers
-                mejor_ratio = ratio
-                mejor_match_user = db_item['id']
-                candidato_fichero = db_item['filename']
-
-        if mejor_inliers >= 12: 
-            print(f"[IDENTIFICADO] {mejor_match_user}")
-            print(f"Evidencia muy fuerte: {mejor_inliers} inliers con {candidato_fichero})")
-        elif mejor_inliers >= 8:
-            print(f"[POSIBLE IDENTIFICACIÓN] {mejor_match_user}")
-            print(f"(Evidencia moderada: {mejor_inliers} inliers con {candidato_fichero})")
-        else:
-            print(f"[NO IDENTIFICADO] No coincide con nadie registrado")
+            # CLASIFICACIÓN PARA LA DET:
+            # Asumimos que si el nombre del archivo contiene el ID del usuario referencia, es genuino.
+            # Si no, asumimos que es un impostor.
+            if ref_user in f:
+                test_genuinos.append(best)
+            else:
+                test_impostores.append(best)
+                
+    return test_genuinos, test_impostores
