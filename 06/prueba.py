@@ -57,8 +57,9 @@ class LFWDataset(Dataset):
 
     def __getitem__(self, idx):
         img1, img2, label = self.data[idx]
-        img1_file = Image.open(os.path.join(self.root_dir, img1))
-        img2_file = Image.open(os.path.join(self.root_dir, img2))
+        img1_file = Image.open(os.path.join(self.root_dir, img1)).convert("RGB") # cambiado
+        img2_file = Image.open(os.path.join(self.root_dir, img2)).convert("RGB") # cambiado
+
         if self.random_aug:
             img1_file = self.random_augmentation(img1_file, self.random_aug_prob)
             img2_file = self.random_augmentation(img2_file, self.random_aug_prob)
@@ -137,7 +138,7 @@ class SiameseNetwork(nn.Module):
             Flatten(),
             nn.Linear(131072, 1024),
             nn.ReLU(inplace=True),
-            nn.BatchNorm2d(1024)
+            nn.BatchNorm1d(1024) # cambio
         )
 
         self.fc = nn.Sequential(
@@ -190,7 +191,7 @@ def train(args):
         transforms.Resize(128),
         transforms.ToTensor(),
     ])
-    train_dataset = LFWDataset('./lfw', './train.txt', default_transform, args.randaug)
+    train_dataset = LFWDataset('./output', './train.txt', default_transform, args.randaug)
     print("Loaded {} training data.".format(len(train_dataset)))
 
     # # Data Loader (Input Pipeline)
@@ -236,7 +237,7 @@ def train(args):
                 loss = criterion(output_labels_prob, labels)
                 loss.backward()
                 optimizer.step()
-        print('Epoch [%d/%d], Iter [%d/%d] Loss: %.4f' % (epoch+1, num_epochs, i+1, len(train_dataset)//BATCH_SIZE, loss.data[0]))
+        print('Epoch [%d/%d], Iter [%d/%d] Loss: %.4f' % (epoch+1, num_epochs, i+1, len(train_dataset)//BATCH_SIZE, loss.item())) # cambio
 
     # Training accuracy
     test_against_data(args, 'training', train_loader, siamese_net)
@@ -273,7 +274,7 @@ def test_against_data(args, label, dataset, siamese_net):
         if args.cuda:
             output_labels = output_labels.cuda()
         total += labels.size(0)
-        correct += (output_labels == labels).sum().data[0]
+        correct += (output_labels == labels).sum().item()
 
     print('Accuracy of the model on the {} {} images: {} %%'.format(total, label, (100 * correct / total)))
 
@@ -291,7 +292,7 @@ def test(args, siamese_net=None):
         transforms.Resize(128),
         transforms.ToTensor(),
     ])
-    test_dataset = LFWDataset('./lfw', './test.txt', default_transform)
+    test_dataset = LFWDataset('./output', './test.txt', default_transform)
     print("Loaded {} test data.".format(len(test_dataset)))
 
     test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
