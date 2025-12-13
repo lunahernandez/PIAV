@@ -43,7 +43,15 @@ class LFWDataset(Dataset):
         data = []
         for line in path_file:
             line = line.strip()
-            img1, img2, label = line.split(' ')
+            # Saltar líneas vacías
+            if not line:
+                continue
+            # Usar split(' ') para ser consistente con el formato del archivo
+            parts = line.split(' ')
+            if len(parts) != 3:
+                print(f"Warning: Skipping invalid line: {line}")
+                continue
+            img1, img2, label = parts
             label = int(label)
             data.append((img1, img2, label))
         self.data = data
@@ -57,17 +65,16 @@ class LFWDataset(Dataset):
 
     def __getitem__(self, idx):
         img1, img2, label = self.data[idx]
-        img1_file = Image.open(os.path.join(self.root_dir, img1)).convert("RGB") # cambiado
-        img2_file = Image.open(os.path.join(self.root_dir, img2)).convert("RGB") # cambiado
 
-        if self.random_aug:
-            img1_file = self.random_augmentation(img1_file, self.random_aug_prob)
-            img2_file = self.random_augmentation(img2_file, self.random_aug_prob)
+        img1_file = Image.open(os.path.join(self.root_dir, img1)).convert("RGB")
+        img2_file = Image.open(os.path.join(self.root_dir, img2)).convert("RGB")
 
         if self.transform:
             img1_file = self.transform(img1_file)
             img2_file = self.transform(img2_file)
-        return (img1_file, img2_file, label)
+
+        return img1_file, img2_file, label, img1, img2 # devolver nombres
+
 
     def random_augmentation(self, img, prob):
         def rotate(img):
@@ -179,11 +186,11 @@ def threashold_contrastive_loss(input1, input2, m):
 
 
 def cur_time():
-    fmt = '%Y-%m-%d %H:%M:%S %Z%z'
-    eastern = timezone('US/Eastern')
-    naive_dt = datetime.now()
+    fmt = "%Y-%m-%d_%H-%M-%S_%Z%z"  # sin :
+    eastern = timezone("US/Eastern")
     loc_dt = datetime.now(eastern)
-    return loc_dt.strftime(fmt).replace(' ', '_')
+    return loc_dt.strftime(fmt)
+
 
 
 def train(args):
@@ -214,7 +221,7 @@ def train(args):
     # Train the Model
     num_epochs = args.epoch
     for epoch in range(num_epochs):
-        for i, (img1_set, img2_set, labels) in enumerate(train_loader):
+        for i, (img1_set, img2_set, labels, _, _) in enumerate(train_loader):
 
             if args.cuda:
                 img1_set = img1_set.cuda()
@@ -254,7 +261,8 @@ def test_against_data(args, label, dataset, siamese_net):
     siamese_net.eval()  # Change model to 'eval' mode (BN uses moving mean/var).
     correct = 0.0
     total = 0.0
-    for img1_set, img2_set, labels in dataset:
+    for img1_set, img2_set, labels, name1, name2 in dataset:
+
         labels = labels.view(-1, 1).float()
         if args.cuda:
             img1_set = img1_set.cuda()
@@ -270,6 +278,14 @@ def test_against_data(args, label, dataset, siamese_net):
         else:
             output_labels_prob = siamese_net(img1_set, img2_set)
             output_labels = threashold_sigmoid(output_labels_prob)
+        pred = output_labels.view(-1).int().cpu().numpy()
+        gt = labels.view(-1).int().cpu().numpy()
+
+        for j in range(len(name1)):
+            decision = "ACEPTA" if pred[j] == 1 else "RECHAZA"
+            ok = "OK" if pred[j] == gt[j] else "ERROR"
+            print(f"{os.path.basename(name1[j])} - {os.path.basename(name2[j])}: {decision} (GT={gt[j]}) {ok}")
+
 
         if args.cuda:
             output_labels = output_labels.cuda()

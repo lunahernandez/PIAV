@@ -1,6 +1,17 @@
+crd_0815f/sobel/crd_0815f_01.png crd_0815f/sobel/crd_0815f_01.png 1
 crd_0815f/sobel/crd_0815f_01.png crd_0815f/sobel/crd_0815s_01.png 1
-crd_0819f/sobel/crd_0819f_01.png crd_0819f/sobel/crd_0819s_01.png 1
+crd_0815f/sobel/crd_0815f_01.png crd_0813f/sobel/crd_0813f_01.png 0
+crd_0815f/sobel/crd_0815f_01.png crd_0813f/sobel/crd_0813s_01.png 0
+crd_0815f/sobel/crd_0815f_01.png crd_0814f/sobel/crd_0814f_01.png 0
+crd_0815f/sobel/crd_0815f_01.png crd_0814f/sobel/crd_0814s_01.png 0
+crd_0815f/sobel/crd_0815f_01.png crd_0816f/sobel/crd_0816f_01.png 0
+crd_0815f/sobel/crd_0815f_01.png crd_0816f/sobel/crd_0816s_01.png 0
+crd_0815f/sobel/crd_0815f_01.png crd_0817f/sobel/crd_0817f_01.png 0
+crd_0815f/sobel/crd_0815f_01.png crd_0817f/sobel/crd_0817s_01.png 0
+crd_0815f/sobel/crd_0815f_01.png crd_0818f/sobel/crd_0818f_01.png 0
+crd_0815f/sobel/crd_0815f_01.png crd_0818f/sobel/crd_0818s_01.png 0
 crd_0815f/sobel/crd_0815f_01.png crd_0819f/sobel/crd_0819f_01.png 0
 crd_0815f/sobel/crd_0815f_01.png crd_0819f/sobel/crd_0819s_01.png 0
-crd_0815f/sobel/crd_0815s_01.png crd_0819f/sobel/crd_0819f_01.png 0
-crd_0815f/sobel/crd_0815s_01.png crd_0819f/sobel/crd_0819s_01.png 0
+crd_0815f/sobel/crd_0815f_01.png crd_0820f/sobel/crd_0820f_01.png 0
+crd_0815f/sobel/crd_0815f_01.png crd_0820f/sobel/crd_0820s_01.png 0
+
